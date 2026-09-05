@@ -63,9 +63,13 @@ def _default_repo(settings: Settings) -> HouseholdRepository:
     if settings.backend == "memory":
         return seeded_repository()
     if settings.backend == "neo4j":
-        raise NotImplementedError(
-            "The Neo4j backend lands in Week 2. Set SAARTHI_BACKEND=memory for now."
-        )
+        if settings.neo4j is None:
+            raise ValueError(
+                "SAARTHI_BACKEND=neo4j requires NEO4J_URI and NEO4J_PASSWORD (see .env.example)."
+            )
+        from saarthi_mcp.neo4j_repo import Neo4jRepository  # lazy: only import driver when used
+
+        return Neo4jRepository.from_settings(settings.neo4j)
     raise ValueError(f"Unknown SAARTHI_BACKEND={settings.backend!r} (use 'memory' or 'neo4j').")
 
 

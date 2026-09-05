@@ -31,3 +31,16 @@
   install `gh` via winget.
 - **Suggestion:** Document the exact GitHub tooling assumptions in the hackathon starter so
   builders provision `gh` up front.
+
+### 2026-09-05 · #003 · Neo4j Aura username/database ≠ "neo4j"
+- **Task:** Connect the MCP server to a fresh Neo4j Aura Free instance.
+- **Steps:** Assumed the Aura defaults (`username=neo4j`, `database=neo4j`) per most docs/tutorials.
+  Wrote a small probe that tried both the downloaded credentials and the `neo4j/neo4j` defaults.
+- **Expected vs actual:** Expected `neo4j/neo4j` to work. Actual: `neo4j/neo4j` returned an
+  `AuthError`; the working credentials had **both the username and the database set to the
+  instance id** (`af7aef82`), exactly as in Aura's downloaded credentials file.
+- **Severity:** Medium (would silently block all graph work if you hand-type the "known" defaults).
+- **Workaround:** Always read username + database from Aura's downloaded credentials file; never
+  assume `neo4j/neo4j`. Probe both before building.
+- **Suggestion:** Aura's console + driver error messages should state the exact username/database
+  for the instance (or make the "not neo4j" case an explicit hint on `AuthError`).

@@ -7,9 +7,10 @@ same interface — the MCP tool contract in ``server.py`` does not change.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Protocol, runtime_checkable
 
+from saarthi_mcp.memory_query import answer_question
 from saarthi_mcp.models import (
     Appointment,
     DoseLog,
@@ -19,17 +20,16 @@ from saarthi_mcp.models import (
     Person,
     Role,
 )
+from saarthi_mcp.timeutil import ensure_aware, now_utc  # re-exported for callers
 
-
-def now_utc() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def ensure_aware(dt: datetime) -> datetime:
-    """Treat a naive datetime as UTC so all comparisons are safe."""
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt
+__all__ = [
+    "HouseholdRepository",
+    "InMemoryRepository",
+    "PersonNotFoundError",
+    "ensure_aware",
+    "now_utc",
+    "seeded_repository",
+]
 
 
 class PersonNotFoundError(ValueError):
@@ -180,57 +180,11 @@ class InMemoryRepository:
     # -- memory query ---------------------------------------------------------
 
     def query_memory(self, person_id: str, question: str) -> tuple[str, list[Event]]:
-        """A keyword heuristic over stored state (Week 1).
-
-        Week 2 replaces this with graph reasoning over Neo4j. It already reads only from
-        persisted state, so it demonstrates real cross-session recall within the process.
-        """
-        q = (question or "").lower()
+        """Cross-session recall over stored state, via the shared heuristic (memory_query)."""
         person = self._people[person_id]
-        med_words = ("pill", "dose", "medication", "meds", "take", "took", "taken")
-        if any(w in q for w in med_words):
-            window = None
-            if "evening" in q or "night" in q:
-                window = (17, 23)
-            elif "morning" in q:
-                window = (4, 12)
-            elif "afternoon" in q:
-                window = (12, 17)
-            logs = self.dose_logs(person_id, since=now_utc() - timedelta(days=2))
-            if window is not None:
-                lo, hi = window
-                logs = [d for d in logs if lo <= ensure_aware(d.at).astimezone().hour < hi]
-            if logs:
-                latest = logs[0]
-                verb = {
-                    DoseStatus.taken: "took",
-                    DoseStatus.missed: "missed",
-                    DoseStatus.skipped: "skipped",
-                }[latest.status]
-                when = ensure_aware(latest.at).astimezone().strftime("%A %I:%M %p").lstrip("0")
-                answer = f"{person.name} {verb} {latest.med} on {when}."
-                supporting = [
-                    e
-                    for e in self.recent_events(person_id, limit=20)
-                    if e.type == "dose" and latest.med.lower() in e.detail.lower()
-                ][:3]
-                return answer, supporting
-            return f"I don't have a dose record matching that for {person.name} yet.", []
-
-        # General recall: score each event by how many query terms it matches, then recency.
-        tokens = [tok for tok in q.split() if len(tok) > 3]
-        scored: list[tuple[int, datetime, Event]] = []
-        for e in self.recent_events(person_id, limit=50):
-            hay = (e.detail + " " + e.type).lower()
-            score = sum(1 for tok in tokens if tok in hay)
-            if score:
-                scored.append((score, ensure_aware(e.at), e))
-        if scored:
-            scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
-            top = scored[0][2]
-            when = ensure_aware(top.at).astimezone().strftime("%b %d").lstrip("0")
-            return f"On {when}: {top.detail}", [t[2] for t in scored[:3]]
-        return f"I don't have anything on record about that for {person.name} yet.", []
+        recent_dose_logs = self.dose_logs(person_id, since=now_utc() - timedelta(days=2))
+        recent_events = self.recent_events(person_id, limit=50)
+        return answer_question(person.name, question, recent_dose_logs, recent_events)
 
 
 # --------------------------------------------------------------------------- seed data

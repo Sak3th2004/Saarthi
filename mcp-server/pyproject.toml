@@ -13,6 +13,8 @@ authors = [{ name = "Sai Saketh Ram G" }]
 dependencies = [
     "fastmcp>=4.0,<5",
     "pydantic>=2.6",
+    "neo4j>=5.0",
+    "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]
