@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "saarthi-mcp"
+version = "0.1.0"
+description = "Saarthi MCP server — the Alexa+ integration surface (FastMCP, Streamable HTTP)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Sai Saketh Ram G" }]
+dependencies = [
+    "fastmcp>=4.0,<5",
+    "pydantic>=2.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+saarthi-mcp = "saarthi_mcp.server:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/saarthi_mcp"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
