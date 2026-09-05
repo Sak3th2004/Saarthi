@@ -93,6 +93,24 @@ async def test_cross_session_recall_of_seeded_event(client):
     assert "meera" in answer or "call back" in answer
 
 
+async def test_recall_is_punctuation_insensitive(client):
+    # Regression: a real code-mixed request surfaced that "water?" (with punctuation) failed to
+    # match "water" in the stored event. Recording an instruction must be recallable with a
+    # question that ends in punctuation.
+    await client.call_tool(
+        "record_event",
+        {
+            "person": "dad",
+            "type": "care_instruction",
+            "detail": "Drink 5 liters of water daily; he has kidney stones.",
+        },
+    )
+    res = await client.call_tool(
+        "query_memory", {"person": "dad", "question": "what did we note about dad's water?"}
+    )
+    assert "water" in res.data["answer"].lower()
+
+
 async def test_medical_advice_is_refused_and_deferred(client):
     res = await client.call_tool(
         "query_memory",

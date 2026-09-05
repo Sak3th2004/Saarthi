@@ -7,6 +7,8 @@ can add graph-native reasoning without changing the tool contract.
 
 from __future__ import annotations
 
+import re
+
 from saarthi_mcp.models import DoseLog, DoseStatus, Event
 from saarthi_mcp.timeutil import ensure_aware
 
@@ -52,7 +54,8 @@ def answer_question(
         return f"I don't have a dose record matching that for {person_name} yet.", []
 
     # General recall: score each event by how many query terms it matches, then recency.
-    tokens = [tok for tok in q.split() if len(tok) > 3]
+    # Tokenize on word characters so punctuation ("water?" -> "water") doesn't break matching.
+    tokens = [tok for tok in re.findall(r"[a-z0-9]+", q) if len(tok) > 3]
     scored = []
     for e in recent_events:
         hay = (e.detail + " " + e.type).lower()

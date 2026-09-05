@@ -236,7 +236,7 @@ def query_memory(person: str, question: str) -> ToolResult:
     if any(m in q for m in _ADVICE_MARKERS):
         answer, events = _repo().query_memory(p.id, question)
         safe = (
-            "I can share what's on record, but I can't give medical advice — please talk to the "
+            "I can share what's on record, but I can't give medical advice - please talk to the "
             f"doctor. Here's what I have: {answer}"
         )
         return _result(
