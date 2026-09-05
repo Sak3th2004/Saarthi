@@ -1,0 +1,26 @@
+# Local Neo4j for dev/test. Identical Bolt protocol to Neo4j Aura, so code written/tested here
+# runs unchanged on Aura — only NEO4J_URI/credentials change.
+#
+#   docker compose -f memory/docker-compose.yml up -d
+#   # Browser UI: http://localhost:7474   (neo4j / saarthi-dev-pw)
+#   # Bolt:       bolt://localhost:7687
+services:
+  neo4j:
+    image: neo4j:5
+    container_name: saarthi-neo4j
+    ports:
+      - "7474:7474" # HTTP browser
+      - "7687:7687" # Bolt
+    environment:
+      NEO4J_AUTH: neo4j/saarthi-dev-pw
+      NEO4J_server_memory_pagecache_size: 256M
+    volumes:
+      - saarthi-neo4j-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  saarthi-neo4j-data:
