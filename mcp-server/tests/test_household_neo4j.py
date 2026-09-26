@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from urllib.parse import urlparse
 from uuid import uuid4
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from neo4j import ManagedTransaction
@@ -128,3 +129,54 @@ def test_legacy_ambiguous_people_require_unique_id(empty_graph):
             empty_graph.resolve_person(label)
     assert empty_graph.resolve_person("first").id == "first"
     assert empty_graph.resolve_person("second").id == "second"
+
+
+def test_search_finds_old_facts_without_other_person_or_execution_metadata(empty_graph):
+    data = definition()
+    empty_graph.import_household(data)
+    at = datetime.now(timezone.utc)
+    marker = "callback" + uuid4().hex
+    original = empty_graph.add_event(data.primary_person_id, "call", marker + " saved fact", at - timedelta(days=400))
+    empty_graph.add_event(data.people[1].id, "call", marker + " other-person private record", at)
+    empty_graph.add_event(data.primary_person_id, "agent_action", marker + " internal metadata", at)
+    empty_graph._write(
+        "UNWIND $records AS props MATCH (p:Person {id:$id}) "
+        "CREATE (p)-[:EXPERIENCED]->(e:Event) SET e = props",
+        id=data.primary_person_id,
+        records=[{"type": "note", "detail": f"Unrelated newer entry {i}", "at": at - timedelta(minutes=i)} for i in range(100)],
+    )
+    assert original not in empty_graph.recent_events(data.primary_person_id, limit=50)
+    reader = Neo4jRepository.from_settings(load_settings().neo4j)
+    try:
+        answer, evidence = reader.query_memory(data.primary_person_id, marker)
+        assert "saved fact" in answer
+        assert "other-person" not in answer
+        assert "internal metadata" not in answer
+        assert evidence == [original]
+    finally:
+        reader.close()
+
+
+def test_database_search_ranking_matches_memory_and_treats_query_as_data(empty_graph):
+    from saarthi_mcp.repository import InMemoryRepository
+
+    data = definition()
+    empty_graph.import_household(data)
+    memory = InMemoryRepository()
+    memory.import_household(data)
+    at = datetime.now(timezone.utc)
+    records = [
+        ("call", "José confirmed the physio callback", at - timedelta(days=30)),
+        ("call", "Physio callback was rescheduled", at),
+        ("visit", "Family visit, unrelated detail", at),
+    ]
+    for kind, detail, when in records:
+        for backend in (empty_graph, memory):
+            backend.add_event(data.primary_person_id, kind, detail, when)
+    for question in ("physio callback", "José", "family visit", ""):
+        assert empty_graph.search_events(data.primary_person_id, question) == memory.search_events(data.primary_person_id, question)
+    before = empty_graph._read("MATCH (n) RETURN count(n) AS count")[0]["count"]
+    assert empty_graph.search_events(data.primary_person_id, "x') MATCH (n) DETACH DELETE n //") == []
+    assert empty_graph._read("MATCH (n) RETURN count(n) AS count")[0]["count"] == before
+    with pytest.raises(ValueError, match="Search limit"):
+        empty_graph.search_events(data.primary_person_id, "callback", limit=101)

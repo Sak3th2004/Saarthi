@@ -157,6 +157,13 @@ async def test_new_event_and_dose_survive_server_process_restart(repo):
         event_at = recorded.data["event"]["at"]
         dose_at = logged.data["dose"]["at"]
 
+    # Relevant history must survive both restarts and more than 50 later entries.
+    repo._write(
+        "UNWIND range(1, 75) AS number MATCH (p:Person {id:'elder-1'}) "
+        "CREATE (p)-[:EXPERIENCED]->(:Event {type:'note', detail:'Unrelated subsequent entry', at:$at})",
+        at=datetime.now(timezone.utc),
+    )
+
     # First process has exited; second process creates a new Neo4j connection.
     async with fresh_http_server() as reader:
         event = await reader.call_tool("query_memory", {"person": "dad", "question": marker})

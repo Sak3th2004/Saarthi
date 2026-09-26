@@ -26,6 +26,45 @@ _RECALL_WORDS = MED_WORDS | set(
 )
 _VERB = {DoseStatus.taken: "took", DoseStatus.missed: "missed", DoseStatus.skipped: "skipped"}
 
+# These are retrieval controls, not care rules. Internal execution metadata is
+# retained in the action feed but must never masquerade as household evidence.
+INTERNAL_EVENT_TYPES = {"agent_action", "household_setup"}
+_SEARCH_STOP_WORDS = set(
+    "did can and for the his her our had has was are what when where which who whom whose does have been were would could should "
+    "about this that these those with from into there their please tell show "
+    "latest recent record records memory happened".split()
+)
+
+
+def event_search_terms(question: str) -> list[str]:
+    """Bound and normalize literal search terms; never accept database query syntax."""
+    words = re.findall(r"[^\W_]+", (question or "").lower(), flags=re.UNICODE)
+    return list(dict.fromkeys(
+        word for word in words if 3 <= len(word) <= 80 and word not in _SEARCH_STOP_WORDS
+    ))[:24]
+
+
+def rank_events(question: str, events: list[Event], limit: int = 50) -> list[Event]:
+    """Rank saved evidence by distinct matching terms, then observation time.
+
+    A retrieval score is relevance, never a probability that a care fact is true.
+    The Neo4j candidate query uses the same ordering before its result limit.
+    """
+    terms = event_search_terms(question)
+    scored = []
+    seen = set()
+    for event in events:
+        identity = (event.type, event.detail, ensure_aware(event.at))
+        if event.type in INTERNAL_EVENT_TYPES or identity in seen:
+            continue
+        seen.add(identity)
+        haystack = (event.detail + " " + event.type).lower()
+        score = sum(term in haystack for term in terms)
+        if score:
+            scored.append((score, ensure_aware(event.at), event.type, event.detail, event))
+    scored.sort(key=lambda row: row[:4], reverse=True)
+    return [row[4] for row in scored[:limit]]
+
 
 def _name_pattern(name: str) -> str:
     return r"(?<![\w-])" + re.escape(name.strip()) + r"(?![\w-])"
@@ -51,6 +90,10 @@ def answer_question(
 ) -> tuple[str, list[Event]]:
     """Answer a recall question from pre-fetched dose logs (recent, desc) and events (recent, desc)."""
     q = (question or "").lower()
+    # Recent and relevance-ranked candidates can contain the same stored fact.
+    recent_events = list({
+        (event.type, event.detail, ensure_aware(event.at)): event for event in recent_events
+    }.values())
 
     names = {name.strip().lower() for name in (medication_names or []) if name.strip()}
     names.update(d.med.strip().lower() for d in recent_dose_logs if d.med.strip())
@@ -87,18 +130,9 @@ def answer_question(
             return answer, supporting
         return f"I don't have a dose record matching that for {person_name} yet.", []
 
-    # General recall: score each event by how many query terms it matches, then recency.
-    # Tokenize on word characters so punctuation ("water?" -> "water") doesn't break matching.
-    tokens = [tok for tok in re.findall(r"[a-z0-9]+", q) if len(tok) > 3]
-    scored = []
-    for e in recent_events:
-        hay = (e.detail + " " + e.type).lower()
-        score = sum(1 for tok in tokens if tok in hay)
-        if score:
-            scored.append((score, ensure_aware(e.at), e))
-    if scored:
-        scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
-        top = scored[0][2]
-        when = ensure_aware(top.at).astimezone().strftime("%b %d").lstrip("0")
-        return f"On {when}: {top.detail}", [t[2] for t in scored[:3]]
+    ranked = rank_events(question, recent_events, limit=3)
+    if ranked:
+        top = ranked[0]
+        when = ensure_aware(top.at).isoformat(timespec="minutes")
+        return f"On {when}: {top.detail}", ranked
     return f"I don't have anything on record about that for {person_name} yet.", []

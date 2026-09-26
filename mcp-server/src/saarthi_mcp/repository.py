@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from saarthi_mcp.household import HouseholdDefinition
 
-from saarthi_mcp.memory_query import answer_question
+from saarthi_mcp.memory_query import answer_question, rank_events
 from saarthi_mcp.models import (
     Appointment,
     DoseLog,
@@ -55,6 +55,7 @@ class HouseholdRepository(Protocol):
     def medications_for(self, person_id: str) -> list[Medication]: ...
     def upcoming_appointments(self, person_id: str, limit: int = 5) -> list[Appointment]: ...
     def recent_events(self, person_id: str, limit: int = 10) -> list[Event]: ...
+    def search_events(self, person_id: str, question: str, limit: int = 50) -> list[Event]: ...
     def dose_logs(self, person_id: str, since: datetime | None = None) -> list[DoseLog]: ...
     def adherence(self, person_id: str, days: int = 7) -> float: ...
     def add_dose(
@@ -154,6 +155,11 @@ class InMemoryRepository:
             logs = [d for d in logs if ensure_aware(d.at) >= since]
         return sorted(logs, key=lambda d: ensure_aware(d.at), reverse=True)
 
+    def search_events(self, person_id: str, question: str, limit: int = 50) -> list[Event]:
+        if not 1 <= limit <= 100:
+            raise ValueError("Search limit must be between 1 and 100.")
+        return rank_events(question, self._events.get(person_id, []), limit=limit)
+
     def adherence(self, person_id: str, days: int = 7) -> float:
         since = now_utc() - timedelta(days=days)
         logs = [d for d in self._doses.get(person_id, []) if ensure_aware(d.at) >= since]
@@ -212,8 +218,10 @@ class InMemoryRepository:
         person = self._people[person_id]
         recent_dose_logs = self.dose_logs(person_id, since=now_utc() - timedelta(days=2))
         recent_events = self.recent_events(person_id, limit=50)
+        # Keep recent dose evidence while also finding relevant older general facts.
+        candidates = recent_events + self.search_events(person_id, question, limit=50)
         return answer_question(
-            person.name, question, recent_dose_logs, recent_events,
+            person.name, question, recent_dose_logs, candidates,
             medication_names=[med.name for med in self.medications_for(person_id)],
         )
 

@@ -16,7 +16,7 @@ from neo4j.exceptions import ConstraintError
 from neo4j.time import DateTime as Neo4jDateTime
 
 from saarthi_mcp.config import Neo4jSettings
-from saarthi_mcp.memory_query import answer_question
+from saarthi_mcp.memory_query import INTERNAL_EVENT_TYPES, answer_question, event_search_terms
 from saarthi_mcp.models import (
     Appointment,
     DoseLog,
@@ -185,6 +185,27 @@ class Neo4jRepository:
         )
         return [self._dose(r["d"]) for r in recs]
 
+    def search_events(self, person_id: str, question: str, limit: int = 50) -> list[Event]:
+        if not 1 <= limit <= 100:
+            raise ValueError("Search limit must be between 1 and 100.")
+        terms = event_search_terms(question)
+        if not terms:
+            return []
+        rows = self._read(
+            """
+            MATCH (:Person {id:$id})-[:EXPERIENCED]->(e:Event)
+            WHERE NOT e.type IN $excluded
+            WITH DISTINCT e
+            WITH e, toLower(coalesce(e.detail, '') + ' ' + coalesce(e.type, '')) AS text
+            WITH e, reduce(score=0, term IN $terms |
+                score + CASE WHEN text CONTAINS term THEN 1 ELSE 0 END) AS score
+            WHERE score > 0
+            RETURN e ORDER BY score DESC, e.at DESC, e.type DESC, e.detail DESC LIMIT $limit
+            """,
+            id=person_id, terms=terms, excluded=sorted(INTERNAL_EVENT_TYPES), limit=limit,
+        )
+        return [self._event(row["e"]) for row in rows]
+
     def adherence(self, person_id: str, days: int = 7) -> float:
         recs = self._read(
             """
@@ -276,8 +297,9 @@ class Neo4jRepository:
         person = self._person_by_id(person_id)
         recent_dose_logs = self.dose_logs(person_id, since=now_utc() - timedelta(days=2))
         recent_events = self.recent_events(person_id, limit=50)
+        candidates = recent_events + self.search_events(person_id, question, limit=50)
         return answer_question(
-            person.name, question, recent_dose_logs, recent_events,
+            person.name, question, recent_dose_logs, candidates,
             medication_names=[med.name for med in self.medications_for(person_id)],
         )
 

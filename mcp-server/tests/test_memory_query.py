@@ -103,6 +103,7 @@ def test_both_repositories_pass_scheduled_medications_to_recall(backend, monkeyp
         monkeypatch.setattr(repo, "_person_by_id", lambda person_id: person)
     monkeypatch.setattr(repo, "dose_logs", lambda person_id, since: LOGS)
     monkeypatch.setattr(repo, "recent_events", lambda person_id, limit: [])
+    monkeypatch.setattr(repo, "search_events", lambda person_id, question, limit: [])
     monkeypatch.setattr(repo, "medications_for", lambda person_id: [
         Medication(name="Atorvastatin", dose="saved dose", schedule=[])
     ])
