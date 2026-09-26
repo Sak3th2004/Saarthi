@@ -34,10 +34,10 @@ from saarthi_mcp.models import (
 )
 from saarthi_mcp.repository import (
     HouseholdRepository,
+    InMemoryRepository,
     PersonNotFoundError,
     ensure_aware,
     now_utc,
-    seeded_repository,
 )
 
 mcp: FastMCP = FastMCP(
@@ -65,7 +65,11 @@ def _repo() -> HouseholdRepository:
 
 def _default_repo(settings: Settings) -> HouseholdRepository:
     if settings.backend == "memory":
-        return seeded_repository()
+        repo = InMemoryRepository()
+        if settings.household_file:
+            from saarthi_mcp.household import load_household
+            repo.import_household(load_household(settings.household_file))
+        return repo
     if settings.backend == "neo4j":
         if settings.neo4j is None:
             raise ValueError(
@@ -156,7 +160,10 @@ def _orchestrated(operation: str):
 def get_household_summary() -> ToolResult:
     """Current state for the household's elder: meds, next appointments, recent events, adherence."""
     repo = _repo()
-    elder = repo.primary_elder()
+    try:
+        elder = repo.primary_elder()
+    except PersonNotFoundError as exc:
+        raise ToolError("No household is configured. Import your household records before using this tool.") from exc
     meds = repo.medications_for(elder.id)
     appts = repo.upcoming_appointments(elder.id)
     events = repo.recent_events(elder.id, limit=5)

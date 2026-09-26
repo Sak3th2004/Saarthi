@@ -43,6 +43,7 @@ class Settings:
     agent_mode: str = "off"
     aws_region: str = "us-east-1"
     bedrock_model_id: str = DEFAULT_BEDROCK_MODEL_ID
+    household_file: str | None = None
 
     @property
     def url(self) -> str:
@@ -74,4 +75,5 @@ def load_settings() -> Settings:
         agent_mode=agent_mode,
         aws_region=os.getenv("AWS_REGION", "us-east-1"),
         bedrock_model_id=model_id,
+        household_file=os.getenv("SAARTHI_HOUSEHOLD_FILE") or None,
     )

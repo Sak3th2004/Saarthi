@@ -6,6 +6,10 @@
 CREATE CONSTRAINT person_id IF NOT EXISTS
   FOR (p:Person) REQUIRE p.id IS UNIQUE;
 
+// Only the imported primary person holds slot 1: competing initial imports cannot mix data.
+CREATE CONSTRAINT person_setup_slot IF NOT EXISTS
+  FOR (p:Person) REQUIRE p.setup_slot IS UNIQUE;
+
 CREATE CONSTRAINT appointment_id IF NOT EXISTS
   FOR (a:Appointment) REQUIRE a.id IS UNIQUE;
 

@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
 
 from neo4j import Driver, GraphDatabase
+from neo4j.exceptions import ConstraintError
 from neo4j.time import DateTime as Neo4jDateTime
 
 from saarthi_mcp.config import Neo4jSettings
@@ -27,8 +29,12 @@ from saarthi_mcp.models import (
 from saarthi_mcp.repository import PersonNotFoundError
 from saarthi_mcp.timeutil import ensure_aware, now_utc
 
+if TYPE_CHECKING:
+    from saarthi_mcp.household import HouseholdDefinition
+
 _CONSTRAINTS = (
     "CREATE CONSTRAINT person_id IF NOT EXISTS FOR (p:Person) REQUIRE p.id IS UNIQUE",
+    "CREATE CONSTRAINT person_setup_slot IF NOT EXISTS FOR (p:Person) REQUIRE p.setup_slot IS UNIQUE",
     "CREATE CONSTRAINT appointment_id IF NOT EXISTS FOR (a:Appointment) REQUIRE a.id IS UNIQUE",
     "CREATE INDEX medication_name IF NOT EXISTS FOR (m:Medication) ON (m.name)",
     "CREATE INDEX event_at IF NOT EXISTS FOR (e:Event) ON (e.at)",
@@ -276,6 +282,53 @@ class Neo4jRepository:
 
     # -- seeding helpers (beyond the read/write interface) --------------------
 
+    def import_household(self, definition: HouseholdDefinition) -> None:
+        """Create a user household in one transaction; never overwrite an existing graph.
+
+        A unique slot on the primary Person serializes competing initial imports.
+        No separate lock node or partially committed registration is needed.
+        """
+        at = now_utc()
+        primary_id = definition.primary_person_id
+
+        def create(tx):
+            tx.run("CREATE (:Person {id:$id, setup_slot:1})", id=primary_id).consume()
+            occupied = tx.run(
+                "MATCH (primary:Person {id:$id}), (n) WHERE n <> primary RETURN count(n) AS count",
+                id=primary_id,
+            ).single()["count"]
+            if occupied:
+                raise ValueError("Household import requires an empty graph; existing records were not changed.")
+            for member in definition.people:
+                props = Person.model_validate(member.model_dump()).model_dump(mode="json")
+                props.update(aliases=member.aliases, primary=member.id == primary_id)
+                if member.id == primary_id:
+                    tx.run("MATCH (p:Person {id:$id}) SET p += $props", id=member.id, props=props).consume()
+                else:
+                    tx.run("CREATE (p:Person) SET p = $props", props=props).consume()
+                for med in member.medications:
+                    tx.run(
+                        "MATCH (p:Person {id:$id}) CREATE (p)-[:TAKES]->(m:Medication) SET m = $props",
+                        id=member.id, props=med.model_dump(),
+                    ).consume()
+                tx.run(
+                    "MATCH (p:Person {id:$id}) CREATE (p)-[:EXPERIENCED]->"
+                    "(:Event {type:'household_setup', detail:'User-supplied household records imported.', at:$at})",
+                    id=member.id, at=at,
+                ).consume()
+            for rel in definition.relationships:
+                tx.run(
+                    "MATCH (a:Person {id:$a}), (b:Person {id:$b}) "
+                    "MERGE (a)-[r:RELATED_TO]->(b) SET r.relation=$relation",
+                    a=rel.from_person, b=rel.to_person, relation=rel.relation,
+                ).consume()
+
+        try:
+            with self._driver.session(database=self._db) as session:
+                session.execute_write(create)
+        except ConstraintError:
+            raise ValueError("Household setup conflicts with existing records; no records were changed.") from None
+
     def wipe(self) -> None:
         """Delete all nodes/relationships. Destructive — dev/demo DB only."""
         self._write("MATCH (n) DETACH DELETE n")
@@ -325,7 +378,7 @@ class Neo4jRepository:
         )
 
 
-def seed_neo4j(repo: Neo4jRepository, wipe: bool = True) -> None:
+def seed_neo4j(repo: Neo4jRepository, wipe: bool = False) -> None:
     """Seed the sample household into Neo4j (mirrors repository.seeded_repository).
 
     Replace with the real demo user's data before the video (AGENTS.md §10). Destructive when

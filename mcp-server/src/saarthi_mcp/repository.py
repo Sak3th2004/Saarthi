@@ -8,7 +8,10 @@ same interface — the MCP tool contract in ``server.py`` does not change.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from saarthi_mcp.household import HouseholdDefinition
 
 from saarthi_mcp.memory_query import answer_question
 from saarthi_mcp.models import (
@@ -70,10 +73,26 @@ class InMemoryRepository:
         self._doses: dict[str, list[DoseLog]] = {}
         self._appts: dict[str, list[Appointment]] = {}
         self._events: dict[str, list[Event]] = {}
+        self._relationships: list[tuple[str, str, str]] = []
         self._primary_elder_id: str | None = None
         self._appt_seq = 0
 
     # -- registration helpers -------------------------------------------------
+
+    def import_household(self, definition: HouseholdDefinition) -> None:
+        """Load validated user records into an empty process-local store."""
+        if any((self._people, self._meds, self._doses, self._appts, self._events)):
+            raise ValueError("Household import requires an empty store; existing records were not changed.")
+        staged = InMemoryRepository()
+        at = now_utc()
+        for member in definition.people:
+            person = Person.model_validate(member.model_dump())
+            staged.add_person(person, aliases=member.aliases)
+            staged._meds[person.id] = [Medication.model_validate(m.model_dump()) for m in member.medications]
+            staged.add_event(person.id, "household_setup", "User-supplied household records imported.", at)
+        staged._primary_elder_id = definition.primary_person_id
+        staged._relationships = [(r.from_person, r.to_person, r.relation) for r in definition.relationships]
+        self.__dict__.update(staged.__dict__)
 
     def add_person(self, person: Person, aliases: list[str] | None = None) -> None:
         self._people[person.id] = person
