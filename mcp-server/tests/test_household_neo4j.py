@@ -115,3 +115,16 @@ def test_competing_imports_cannot_mix_two_households(empty_graph):
     assert empty_graph.primary_elder().id == winners[0]
     assert len(empty_graph._read("MATCH (p:Person) RETURN p")) == 2
     assert len(empty_graph._read("MATCH (m:Medication) RETURN m")) == 1
+
+
+def test_legacy_ambiguous_people_require_unique_id(empty_graph):
+    from saarthi_mcp.models import Person, Role
+    from saarthi_mcp.repository import AmbiguousPersonError
+
+    for key in ("first", "second"):
+        empty_graph.upsert_person(Person(id=key, name="Shared name", role=Role.elder), aliases=[" Parent "])
+    for label in ("Shared name", " parent "):
+        with pytest.raises(AmbiguousPersonError, match="unique person ID"):
+            empty_graph.resolve_person(label)
+    assert empty_graph.resolve_person("first").id == "first"
+    assert empty_graph.resolve_person("second").id == "second"

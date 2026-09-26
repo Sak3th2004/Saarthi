@@ -29,6 +29,7 @@ __all__ = [
     "HouseholdRepository",
     "InMemoryRepository",
     "PersonNotFoundError",
+    "AmbiguousPersonError",
     "ensure_aware",
     "now_utc",
     "seeded_repository",
@@ -37,6 +38,10 @@ __all__ = [
 
 class PersonNotFoundError(ValueError):
     """Raised when a person string cannot be resolved to a known household member."""
+
+
+class AmbiguousPersonError(PersonNotFoundError):
+    """A label matches multiple people; the caller must select a unique ID."""
 
 
 # --------------------------------------------------------------------------- interface
@@ -68,7 +73,7 @@ class InMemoryRepository:
 
     def __init__(self) -> None:
         self._people: dict[str, Person] = {}
-        self._aliases: dict[str, str] = {}  # lowercased alias -> person id
+        self._aliases: dict[str, set[str]] = {}  # normalized label -> all matching IDs
         self._meds: dict[str, list[Medication]] = {}
         self._doses: dict[str, list[DoseLog]] = {}
         self._appts: dict[str, list[Appointment]] = {}
@@ -95,11 +100,16 @@ class InMemoryRepository:
         self.__dict__.update(staged.__dict__)
 
     def add_person(self, person: Person, aliases: list[str] | None = None) -> None:
+        # Replacing a record must not leave its old name/aliases pointing at it.
+        for label, matches in list(self._aliases.items()):
+            matches.discard(person.id)
+            if not matches:
+                del self._aliases[label]
         self._people[person.id] = person
-        self._aliases[person.name.lower()] = person.id
-        self._aliases[person.id.lower()] = person.id
-        for a in aliases or []:
-            self._aliases[a.lower()] = person.id
+        for value in [person.name, person.id, *(aliases or [])]:
+            label = value.strip().lower()
+            if label:
+                self._aliases.setdefault(label, set()).add(person.id)
         if person.role is Role.elder and self._primary_elder_id is None:
             self._primary_elder_id = person.id
 
@@ -107,13 +117,12 @@ class InMemoryRepository:
 
     def resolve_person(self, person: str) -> Person:
         key = (person or "").strip().lower()
-        pid = self._aliases.get(key)
-        if pid is None:
-            known = ", ".join(sorted({p.name for p in self._people.values()}))
-            raise PersonNotFoundError(
-                f"Unknown person {person!r}. Known household members: {known}."
-            )
-        return self._people[pid]
+        matches = self._aliases.get(key, set())
+        if not matches:
+            raise PersonNotFoundError("Unknown person. Use a saved household member's name or ID.")
+        if len(matches) > 1:
+            raise AmbiguousPersonError("More than one person matches. Use a unique person ID.")
+        return self._people[next(iter(matches))]
 
     def primary_elder(self) -> Person:
         if self._primary_elder_id is None:

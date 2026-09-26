@@ -26,7 +26,7 @@ from saarthi_mcp.models import (
     Person,
     Role,
 )
-from saarthi_mcp.repository import PersonNotFoundError
+from saarthi_mcp.repository import AmbiguousPersonError, PersonNotFoundError
 from saarthi_mcp.timeutil import ensure_aware, now_utc
 
 if TYPE_CHECKING:
@@ -110,20 +110,21 @@ class Neo4jRepository:
 
     def resolve_person(self, person: str) -> Person:
         key = (person or "").strip().lower()
+        if not key:
+            raise PersonNotFoundError("Unknown person. Use a saved household member's name or ID.")
         recs = self._read(
             """
             MATCH (p:Person)
-            WHERE toLower(p.id) = $key OR toLower(p.name) = $key
-               OR $key IN [a IN coalesce(p.aliases, []) | toLower(a)]
-            RETURN p LIMIT 1
+            WHERE toLower(trim(p.id)) = $key OR toLower(trim(p.name)) = $key
+               OR $key IN [a IN coalesce(p.aliases, []) | toLower(trim(a))]
+            RETURN p LIMIT 2
             """,
             key=key,
         )
         if not recs:
-            names = ", ".join(sorted(r["n"] for r in self._read("MATCH (p:Person) RETURN p.name AS n")))
-            raise PersonNotFoundError(
-                f"Unknown person {person!r}. Known household members: {names}."
-            )
+            raise PersonNotFoundError("Unknown person. Use a saved household member's name or ID.")
+        if len(recs) > 1:
+            raise AmbiguousPersonError("More than one person matches. Use a unique person ID.")
         return self._person(recs[0]["p"])
 
     def _person_by_id(self, person_id: str) -> Person:
