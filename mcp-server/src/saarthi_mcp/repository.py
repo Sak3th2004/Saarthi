@@ -166,7 +166,7 @@ class InMemoryRepository:
         self._appts.setdefault(person_id, []).append(appt)
         self.add_event(
             person_id,
-            type="appointment_booked",
+            type="appointment_recorded",
             detail=f"{kind} on {appt.when.isoformat(timespec='minutes')}",
             at=now_utc(),
         )
@@ -184,7 +184,10 @@ class InMemoryRepository:
         person = self._people[person_id]
         recent_dose_logs = self.dose_logs(person_id, since=now_utc() - timedelta(days=2))
         recent_events = self.recent_events(person_id, limit=50)
-        return answer_question(person.name, question, recent_dose_logs, recent_events)
+        return answer_question(
+            person.name, question, recent_dose_logs, recent_events,
+            medication_names=[med.name for med in self.medications_for(person_id)],
+        )
 
 
 # --------------------------------------------------------------------------- seed data

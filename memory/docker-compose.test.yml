@@ -1,0 +1,18 @@
+# Dedicated, disposable test database; never points at Aura or the development volume.
+name: saarthi-tests
+services:
+  neo4j:
+    image: neo4j:5
+    ports:
+      - "127.0.0.1:17474:7474"
+      - "127.0.0.1:17687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/saarthi-test-only
+      NEO4J_server_memory_pagecache_size: 256M
+      NEO4J_server_memory_heap_initial__size: 256M
+      NEO4J_server_memory_heap_max__size: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30

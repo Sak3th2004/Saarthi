@@ -12,16 +12,32 @@ import re
 from saarthi_mcp.models import DoseLog, DoseStatus, Event
 from saarthi_mcp.timeutil import ensure_aware
 
-MED_WORDS = ("pill", "dose", "medication", "meds", "take", "took", "taken")
+MED_WORDS = {
+    "pill", "pills", "dose", "doses", "medication", "medications", "meds",
+    "medicine", "medicines", "take", "took", "taken", "missed", "skipped",
+}
+# Only these simple generic questions may fall back to the latest dose. Unrecognized
+# terms could be an unknown medication name, so ask for clarification instead.
+_RECALL_WORDS = MED_WORDS | set(
+    "a an the did does has have had he she his her their they i my we our dad father "
+    "appa mom mother mum parent s when what was were is are about any last "
+    "latest recent record records logged log of for on in at this morning afternoon "
+    "evening night today yesterday yet already ever status please tell me show".split()
+)
 _VERB = {DoseStatus.taken: "took", DoseStatus.missed: "missed", DoseStatus.skipped: "skipped"}
 
 
+def _name_pattern(name: str) -> str:
+    return r"(?<![\w-])" + re.escape(name.strip()) + r"(?![\w-])"
+
+
 def _time_window(q: str) -> tuple[int, int] | None:
-    if "evening" in q or "night" in q:
+    words = set(re.findall(r"\w+", q))
+    if words & {"evening", "night"}:
         return (17, 23)
-    if "morning" in q:
+    if "morning" in words:
         return (4, 12)
-    if "afternoon" in q:
+    if "afternoon" in words:
         return (12, 17)
     return None
 
@@ -31,12 +47,28 @@ def answer_question(
     question: str,
     recent_dose_logs: list[DoseLog],
     recent_events: list[Event],
+    medication_names: list[str] | None = None,
 ) -> tuple[str, list[Event]]:
     """Answer a recall question from pre-fetched dose logs (recent, desc) and events (recent, desc)."""
     q = (question or "").lower()
 
-    if any(w in q for w in MED_WORDS):
+    names = {name.strip().lower() for name in (medication_names or []) if name.strip()}
+    names.update(d.med.strip().lower() for d in recent_dose_logs if d.med.strip())
+    matched_names = {name for name in names if re.search(_name_pattern(name), q)}
+    remainder = q
+    for name in sorted(matched_names, key=len, reverse=True):
+        remainder = re.sub(_name_pattern(name), " ", remainder)
+    words = set(re.findall(r"\w+", q))
+    remaining_words = set(re.findall(r"\w+", remainder))
+    allowed_words = _RECALL_WORDS | set(re.findall(r"\w+", person_name.lower()))
+
+    if words & MED_WORDS or (matched_names and remaining_words <= allowed_words):
+        if len(matched_names) > 1 or not remaining_words <= allowed_words:
+            return "Please ask about one medication using its saved name, or about the latest dose.", []
         logs = list(recent_dose_logs)
+        if matched_names:
+            name = next(iter(matched_names))
+            logs = [d for d in logs if d.med.strip().lower() == name]
         window = _time_window(q)
         if window is not None:
             lo, hi = window
@@ -48,7 +80,9 @@ def answer_question(
             supporting = [
                 e
                 for e in recent_events
-                if e.type == "dose" and latest.med.lower() in e.detail.lower()
+                if e.type == "dose"
+                and ensure_aware(e.at) == ensure_aware(latest.at)
+                and re.search(_name_pattern(latest.med), e.detail, flags=re.IGNORECASE)
             ][:3]
             return answer, supporting
         return f"I don't have a dose record matching that for {person_name} yet.", []

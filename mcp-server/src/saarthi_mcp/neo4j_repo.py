@@ -240,7 +240,7 @@ class Neo4jRepository:
             """
             MATCH (p:Person {id:$id})
             CREATE (p)-[:HAS_APPOINTMENT]->(a:Appointment {id:$aid, kind:$kind, when:$when, status:'scheduled'})
-            CREATE (p)-[:EXPERIENCED]->(e:Event {type:'appointment_booked', detail:$detail, at:$now})
+            CREATE (p)-[:EXPERIENCED]->(e:Event {type:'appointment_recorded', detail:$detail, at:$now})
             """,
             id=person_id,
             aid=aid,
@@ -269,7 +269,10 @@ class Neo4jRepository:
         person = self._person_by_id(person_id)
         recent_dose_logs = self.dose_logs(person_id, since=now_utc() - timedelta(days=2))
         recent_events = self.recent_events(person_id, limit=50)
-        return answer_question(person.name, question, recent_dose_logs, recent_events)
+        return answer_question(
+            person.name, question, recent_dose_logs, recent_events,
+            medication_names=[med.name for med in self.medications_for(person_id)],
+        )
 
     # -- seeding helpers (beyond the read/write interface) --------------------
 

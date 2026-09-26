@@ -9,6 +9,9 @@ touching this contract.
 from __future__ import annotations
 
 from datetime import datetime
+from functools import wraps
+from inspect import signature
+import json
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
@@ -49,6 +52,7 @@ mcp: FastMCP = FastMCP(
 
 # Repository holder, injected by build_server(). Kept module-level so tools can close over it.
 _state: dict[str, HouseholdRepository | None] = {"repo": None}
+_agent_state: dict = {"orchestrator": None}
 
 
 def _repo() -> HouseholdRepository:
@@ -73,9 +77,19 @@ def _default_repo(settings: Settings) -> HouseholdRepository:
     raise ValueError(f"Unknown SAARTHI_BACKEND={settings.backend!r} (use 'memory' or 'neo4j').")
 
 
-def build_server(repo: HouseholdRepository | None = None) -> FastMCP:
+def build_server(repo: HouseholdRepository | None = None, orchestrator=None) -> FastMCP:
     """Inject a repository and return the configured MCP server."""
     _state["repo"] = repo if repo is not None else _default_repo(load_settings())
+    settings = load_settings()
+    if orchestrator is None and settings.agent_mode == "bedrock":
+        try:
+            from saarthi_agents import CareOrchestrator
+        except ImportError as exc:
+            raise RuntimeError("Install the local agents package; see agents/README.md.") from exc
+        orchestrator = CareOrchestrator(
+            model_id=settings.bedrock_model_id, region=settings.aws_region,
+        )
+    _agent_state["orchestrator"] = orchestrator
     return mcp
 
 
@@ -88,6 +102,51 @@ def _resolve(person: str) -> Person:
         return _repo().resolve_person(person)
     except PersonNotFoundError as exc:
         raise ToolError(str(exc)) from exc
+
+
+def _orchestrated(operation: str):
+    """Preserve the MCP schema while delegating approved arguments to the agent layer."""
+    def decorate(function):
+        @wraps(function)
+        def wrapped(*args, **kwargs):
+            orchestrator = _agent_state["orchestrator"]
+            if orchestrator is None:
+                return function(*args, **kwargs)
+            bound = signature(function).bind(*args, **kwargs)
+            bound.apply_defaults()
+            person = _resolve(bound.arguments["person"])
+
+            def action():
+                return function(*args, **kwargs).structured_content
+
+            def record(outcome):
+                _repo().add_event(
+                    person.id, type="agent_action",
+                    detail=json.dumps(outcome, ensure_ascii=False), at=now_utc(),
+                )
+
+            try:
+                result = orchestrator.execute(
+                    operation=operation,
+                    arguments=json.loads(json.dumps(dict(bound.arguments), default=str)),
+                    action=action, record=record,
+                )
+            except ToolError:
+                raise
+            except Exception as exc:
+                completed = getattr(exc, "completed_result", None)
+                if isinstance(completed, dict) and isinstance(completed.get("speech"), str):
+                    warning = "The record was saved, but its activity feed entry could not be saved."
+                    result = {**completed, "speech": completed["speech"] + " " + warning,
+                              "warnings": [warning]}
+                    return ToolResult(content=result["speech"], structured_content=result)
+                raise ToolError(
+                    "The agent could not complete this request. Check the recorded action "
+                    "status before retrying."
+                ) from exc
+            return ToolResult(content=result["speech"], structured_content=result)
+        return wrapped
+    return decorate
 
 
 # --------------------------------------------------------------------------- tools
@@ -125,6 +184,7 @@ def get_household_summary() -> ToolResult:
 
 
 @mcp.tool
+@_orchestrated("get_medication_schedule")
 def get_medication_schedule(person: str) -> ToolResult:
     """List a person's medications, doses, and daily schedule."""
     p = _resolve(person)
@@ -138,6 +198,7 @@ def get_medication_schedule(person: str) -> ToolResult:
 
 
 @mcp.tool
+@_orchestrated("log_dose")
 def log_dose(
     person: str, med: str, taken: bool, at: datetime | None = None
 ) -> ToolResult:
@@ -156,15 +217,20 @@ def log_dose(
 
 
 @mcp.tool
+@_orchestrated("book_appointment")
 def book_appointment(person: str, kind: str, when: datetime) -> ToolResult:
-    """Book an appointment of a given kind at a given time."""
+    """Save an appointment record. This does not book with a provider or external calendar."""
     p = _resolve(person)
     appt = _repo().add_appointment(p.id, kind, ensure_aware(when))
-    speech = f"Booked {kind} for {p.name} on {ensure_aware(appt.when).astimezone():%A %b %d, %I:%M %p}."
+    speech = (
+        f"Recorded {kind} for {p.name} on {ensure_aware(appt.when).astimezone():%A %b %d, %I:%M %p}. "
+        "No booking request has been sent to a provider or calendar."
+    )
     return _result(AppointmentResult(person=p, appointment=appt, speech=speech))
 
 
 @mcp.tool
+@_orchestrated("list_appointments")
 def list_appointments(person: str) -> ToolResult:
     """List a person's upcoming appointments."""
     p = _resolve(person)
@@ -194,10 +260,11 @@ def notify_family(person: str, message: str, urgency: Urgency = Urgency.info) ->
         p.id, type="notify", detail=f"[{urgency.value}] {message}", at=now_utc()
     )
     names = ", ".join(c.name for c in contacts) or "the family"
-    speech = f"Noted a {urgency.value} message about {p.name} for {names}."
+    speech = f"Recorded a {urgency.value} message about {p.name} for {names}. No SMS or email has been sent."
     return _result(
         NotifyResult(
-            person=p, delivered_to=channels, urgency=urgency, message=message, speech=speech
+            person=p, delivered_to=[], candidate_channels=channels,
+            urgency=urgency, message=message, speech=speech
         )
     )
 
@@ -229,6 +296,7 @@ _ADVICE_MARKERS = (
 
 
 @mcp.tool
+@_orchestrated("query_memory")
 def query_memory(person: str, question: str) -> ToolResult:
     """Answer a question from the household memory (cross-session recall). Never gives medical advice."""
     p = _resolve(person)

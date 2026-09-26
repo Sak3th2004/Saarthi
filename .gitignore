@@ -46,3 +46,7 @@ Thumbs.db
 
 # --- Claude Code local ---
 .claude/settings.local.json
+
+# Local evidence and disposable test workspaces (never project source).
+/.local-artifacts/
+/.test-temp-*/

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -63,7 +64,7 @@ class Appointment(BaseModel):
     id: str
     kind: str
     when: datetime
-    status: str = "scheduled"
+    status: str = Field(default="scheduled", description="Local schedule status; not provider confirmation")
 
 
 class Event(BaseModel):
@@ -102,6 +103,7 @@ class DoseLogResult(BaseModel):
 class AppointmentResult(BaseModel):
     person: Person
     appointment: Appointment
+    external_booking_status: Literal["not_requested"] = "not_requested"
     speech: str
 
 
@@ -113,7 +115,9 @@ class AppointmentList(BaseModel):
 
 class NotifyResult(BaseModel):
     person: Person
-    delivered_to: list[str]
+    delivered_to: list[str] = Field(description="Confirmed delivery destinations; empty until delivery occurs")
+    candidate_channels: list[str] = Field(description="Saved contact channels; not delivery evidence")
+    delivery_status: Literal["recorded_only"] = "recorded_only"
     urgency: Urgency
     message: str
     speech: str

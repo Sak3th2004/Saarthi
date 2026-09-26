@@ -84,6 +84,30 @@ async def test_log_dose_duplicate_guard(client):
     assert second.data["already_logged"] is True
 
 
+async def test_named_dose_recall_does_not_use_newer_different_medication(client):
+    at = datetime.now(timezone.utc)
+    await client.call_tool("log_dose", {
+        "person": "dad", "med": "Metformin", "taken": False,
+        "at": (at - timedelta(minutes=1)).isoformat(),
+    })
+    await client.call_tool("log_dose", {
+        "person": "dad", "med": "Amlodipine", "taken": True, "at": at.isoformat(),
+    })
+    recall = await client.call_tool("query_memory", {
+        "person": "dad", "question": "Did dad take Metformin?",
+    })
+    assert "missed Metformin" in recall.data["answer"]
+    assert "Amlodipine" not in recall.data["answer"]
+    assert "missed Metformin" in recall.content[0].text
+
+
+async def test_scheduled_medication_without_dose_does_not_report_another_med(client):
+    recall = await client.call_tool("query_memory", {
+        "person": "dad", "question": "Did dad take Atorvastatin?",
+    })
+    assert "don't have a dose record" in recall.data["answer"]
+
+
 async def test_cross_session_recall_of_seeded_event(client):
     # The physio-call event was seeded (a prior "session"); recall must find it.
     res = await client.call_tool(
@@ -127,6 +151,8 @@ async def test_book_and_list_appointment(client):
         "book_appointment", {"person": "dad", "kind": "Eye check", "when": when}
     )
     assert booked.data["appointment"]["kind"] == "Eye check"
+    assert booked.data["external_booking_status"] == "not_requested"
+    assert "No booking request has been sent" in booked.content[0].text
 
     listed = await client.call_tool("list_appointments", {"person": "dad"})
     kinds = {a["kind"] for a in listed.data["appointments"]}
@@ -148,7 +174,42 @@ async def test_notify_family_records_contacts(client):
         {"person": "dad", "message": "Please call this evening", "urgency": "warning"},
     )
     assert res.data["urgency"] == "warning"
-    assert res.data["delivered_to"], "expected at least one family channel"
+    assert res.data["delivered_to"] == []
+    assert res.data["candidate_channels"], "expected at least one saved family channel"
+    assert res.data["delivery_status"] == "recorded_only"
+    assert "No SMS or email has been sent" in res.content[0].text
+
+
+@pytest.mark.parametrize("has_contact", [False, True])
+async def test_record_only_actions_save_history_without_claiming_external_success(has_contact):
+    from saarthi_mcp.models import Person, Role
+    from saarthi_mcp.repository import InMemoryRepository
+
+    repo = InMemoryRepository()
+    repo.add_person(Person(id="new-elder", name="New Person", role=Role.elder))
+    if has_contact:
+        repo.add_person(Person(id="new-family", name="Caregiver", role=Role.family,
+                               email="caregiver@example.test"))
+    async with Client(build_server(repo)) as c:
+        message = await c.call_tool("notify_family", {
+            "person": "new-elder", "message": "Please return the call", "urgency": "urgent",
+        })
+        appt = await c.call_tool("book_appointment", {
+            "person": "new-elder", "kind": "Follow-up",
+            "when": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+        })
+        listed = await c.call_tool("list_appointments", {"person": "new-elder"})
+    assert message.data["delivered_to"] == []
+    assert message.data["candidate_channels"] == (
+        ["email:caregiver@example.test"] if has_contact else []
+    )
+    assert message.data["delivery_status"] == "recorded_only"
+    assert appt.data["external_booking_status"] == "not_requested"
+    assert listed.data["appointments"][0]["id"] == appt.data["appointment"]["id"]
+    events = repo.recent_events("new-elder")
+    assert len(events) == 2
+    assert any(e.type == "notify" and "Please return the call" in e.detail for e in events)
+    assert any(e.type == "appointment_recorded" and "Follow-up" in e.detail for e in events)
 
 
 async def test_unknown_person_raises_tool_error(client):

@@ -17,6 +17,7 @@ except ImportError:  # pragma: no cover - dotenv is a dev dependency
 # installed `mcp`/`fastmcp` release; we assert the handshake in tests and log any gap in
 # FRICTION_LOG.md (#001).
 TARGET_MCP_SPEC = "2025-11-25"
+DEFAULT_BEDROCK_MODEL_ID = ""
 
 # A conservative floor the installed library is expected to meet or exceed. Kept separate from
 # TARGET so the test proves a modern handshake without silently going red when the library caps
@@ -39,6 +40,9 @@ class Settings:
     backend: str  # "memory" (Week 1) | "neo4j" (Week 2+)
     path: str = "/mcp"
     neo4j: Neo4jSettings | None = None
+    agent_mode: str = "off"
+    aws_region: str = "us-east-1"
+    bedrock_model_id: str = DEFAULT_BEDROCK_MODEL_ID
 
     @property
     def url(self) -> str:
@@ -47,6 +51,12 @@ class Settings:
 
 def load_settings() -> Settings:
     backend = os.getenv("SAARTHI_BACKEND", "memory").lower()
+    agent_mode = os.getenv("SAARTHI_AGENTS", "off").lower()
+    if agent_mode not in {"off", "bedrock"}:
+        raise ValueError("SAARTHI_AGENTS must be 'off' or 'bedrock'.")
+    model_id = os.getenv("BEDROCK_MODEL_ID", DEFAULT_BEDROCK_MODEL_ID).strip()
+    if agent_mode == "bedrock" and not model_id:
+        raise ValueError("Set BEDROCK_MODEL_ID to an explicitly selected, tested Bedrock model.")
     neo4j = None
     if backend == "neo4j":
         neo4j = Neo4jSettings(
@@ -61,4 +71,7 @@ def load_settings() -> Settings:
         backend=backend,
         path=os.getenv("SAARTHI_MCP_PATH", "/mcp"),
         neo4j=neo4j,
+        agent_mode=agent_mode,
+        aws_region=os.getenv("AWS_REGION", "us-east-1"),
+        bedrock_model_id=model_id,
     )
