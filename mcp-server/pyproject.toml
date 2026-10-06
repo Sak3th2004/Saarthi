@@ -18,6 +18,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+calendar = ["google-auth>=2.40,<3", "google-auth-oauthlib>=1.2,<2"]
 agents = ["saarthi-agents>=0.1.0,<0.2"]
 dev = [
     "pytest>=8",

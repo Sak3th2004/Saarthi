@@ -380,4 +380,9 @@ def run() -> None:
     """Entry point: serve over Streamable HTTP (AGENTS.md section 5)."""
     settings = load_settings()
     server = build_server()
-    server.run(transport="http", host=settings.host, port=settings.port, path=settings.path)
+    from saarthi_mcp.google_calendar import configured_calendar, attach_calendar_routes
+    calendar = configured_calendar(settings)
+    if calendar is not None:
+        attach_calendar_routes(server, calendar)
+    server.run(transport="http", host=settings.host, port=settings.port, path=settings.path,
+               uvicorn_config={"access_log": False})
