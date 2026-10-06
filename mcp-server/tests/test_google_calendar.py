@@ -147,3 +147,23 @@ async def test_link_from_chat_can_open_landing_but_not_authorize_or_read_data(co
         assert result.status_code == 303
         assert "https://accounts.google.com" in result.headers["content-security-policy"]
         connection.store.load.assert_not_called()
+
+
+async def test_consent_form_preserves_origin_but_callback_keeps_codes_private(connection, caplog):
+    server = FastMCP("calendar-origin-test")
+    attach_calendar_routes(server, connection)
+    transport = httpx.ASGITransport(app=server.http_app(), client=("127.0.0.1", 32100))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+        page = await client.get("/oauth/google/connect")
+        assert page.headers["referrer-policy"] == "same-origin"
+        denied = await client.post("/oauth/google/connect", headers={"origin": "null"})
+        assert denied.status_code == 403
+        assert "origin_kind=null" in caplog.text
+        sent = await client.post("/oauth/google/connect", headers={
+            "origin": "http://127.0.0.1:8080", "sec-fetch-site": "same-origin",
+            "sec-fetch-mode": "navigate", "sec-fetch-dest": "document"})
+        assert sent.status_code == 303
+        assert urlsplit(sent.headers["location"]).hostname == "accounts.google.com"
+        assert sent.headers["referrer-policy"] == "no-referrer"
+        callback = await client.get("/oauth/google/callback")
+        assert callback.headers["referrer-policy"] == "no-referrer"

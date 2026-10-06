@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html import escape
 import json
+import logging
 import secrets
 import threading
 import time
@@ -144,12 +145,27 @@ def attach_calendar_routes(server, connection):
     @server.custom_route("/oauth/google/connect", methods=["GET", "POST"])
     async def connect(request):
         if not allowed(request, landing=True):
+            # Fixed categories only: never log request URLs, codes, cookies or credentials.
+            origin = request.headers.get("origin")
+            origin_kind = ("missing" if origin is None else "null" if origin == "null"
+                           else "local" if origin == "http://127.0.0.1:8080" else "other")
+            logging.getLogger(__name__).warning(
+                "Calendar connect blocked: method=%s origin_kind=%s loopback=%s expected_host=%s cross_site=%s",
+                "POST" if request.method == "POST" else "GET", origin_kind,
+                request.client is not None and request.client.host == "127.0.0.1",
+                request.headers.get("host") == "127.0.0.1:8080",
+                request.headers.get("sec-fetch-site") == "cross-site",
+            )
             return HTMLResponse("Local access required.", status_code=403, headers=headers)
         if request.method == "GET":
             return HTMLResponse("<h1>Connect Google Calendar</h1><p>Connect the saved account to Saarthi. "
                 "Google will ask permission to manage events on calendars you own. "
                 "This connection step does not create or change events.</p>"
-                '<form method="post"><button>Continue to Google</button></form>', headers=headers)
+                '<form method="post"><button>Continue to Google</button></form>',
+                # no-referrer can turn a same-origin HTML form POST's Origin into
+                # null. Preserve Origin for this local form; still omit cross-site
+                # referrers. Callback responses retain the stricter no-referrer.
+                headers={**headers, "Referrer-Policy": "same-origin"})
         try:
             url, browser = connection.start()
             response = RedirectResponse(url, status_code=303, headers=headers)
