@@ -180,3 +180,29 @@ def test_database_search_ranking_matches_memory_and_treats_query_as_data(empty_g
     assert empty_graph._read("MATCH (n) RETURN count(n) AS count")[0]["count"] == before
     with pytest.raises(ValueError, match="Search limit"):
         empty_graph.search_events(data.primary_person_id, "callback", limit=101)
+
+
+async def test_graph_tool_reads_persisted_records_after_reconnection(empty_graph):
+    from fastmcp import Client
+    from saarthi_mcp.server import build_server
+
+    data = definition()
+    empty_graph.import_household(data)
+    marker = "new-event-" + uuid4().hex
+    async with Client(build_server(empty_graph)) as writer:
+        first = await writer.call_tool("get_memory_graph", {"person": data.primary_person_id})
+        await writer.call_tool("record_event", {
+            "person": data.primary_person_id, "type": "call", "detail": marker,
+        })
+    reader = Neo4jRepository.from_settings(load_settings().neo4j)
+    try:
+        async with Client(build_server(reader)) as client:
+            graph = await client.call_tool("get_memory_graph", {"person": data.primary_person_id})
+        assert marker in str(graph.structured_content)
+        assert len(graph.structured_content["nodes"]) == len(first.structured_content["nodes"]) + 1
+        ids = {node["id"] for node in graph.structured_content["nodes"]}
+        assert {node["id"] for node in first.structured_content["nodes"]} < ids
+        assert all(edge["source"] in ids and edge["target"] in ids for edge in graph.structured_content["edges"])
+        assert not any(graph.structured_content["truncated"].values())
+    finally:
+        reader.close()

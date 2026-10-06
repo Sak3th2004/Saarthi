@@ -13,6 +13,7 @@ from saarthi_mcp.repository import seeded_repository
 from saarthi_mcp.server import build_server
 
 ALL_TOOLS = {
+    "get_memory_graph",
     "get_household_summary",
     "get_medication_schedule",
     "log_dose",
