@@ -127,18 +127,23 @@ class CalendarConnection:
 
 def attach_calendar_routes(server, connection):
     """Register local setup routes. Cookie-bound requests, fixed host, no raw API errors."""
-    def allowed(request):
+    def allowed(request, *, landing=False):
+        # A link from chat opens a cross-site document navigation. The read-only
+        # landing page may accept it; POST and calendar data still require same-site.
+        navigation = (landing and request.method == "GET"
+                      and request.headers.get("sec-fetch-mode") == "navigate"
+                      and request.headers.get("sec-fetch-dest") == "document")
         return (request.client is not None and request.client.host == "127.0.0.1"
                 and request.headers.get("host") == "127.0.0.1:8080"
                 and request.headers.get("origin") in (None, "http://127.0.0.1:8080")
-                and request.headers.get("sec-fetch-site") != "cross-site")
+                and (request.headers.get("sec-fetch-site") != "cross-site" or navigation))
 
     headers = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
-               "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; form-action 'self'; frame-ancestors 'none'"}
+               "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; form-action 'self' https://accounts.google.com; frame-ancestors 'none'"}
 
     @server.custom_route("/oauth/google/connect", methods=["GET", "POST"])
     async def connect(request):
-        if not allowed(request):
+        if not allowed(request, landing=True):
             return HTMLResponse("Local access required.", status_code=403, headers=headers)
         if request.method == "GET":
             return HTMLResponse("<h1>Connect Google Calendar</h1><p>Connect the saved account to Saarthi. "

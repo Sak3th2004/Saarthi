@@ -127,3 +127,23 @@ def test_real_event_response_is_not_replaced_by_fixture_data(connection, monkeyp
 def test_callback_config_rejects_unimplemented_hosts_and_routes(uri):
     with pytest.raises(ValueError):
         CalendarConfig("test.apps.googleusercontent.com", "secret", "owner@example.com", uri)
+
+
+async def test_link_from_chat_can_open_landing_but_not_authorize_or_read_data(connection):
+    server = FastMCP("calendar-link-test")
+    attach_calendar_routes(server, connection)
+    navigation = {"sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document"}
+    transport = httpx.ASGITransport(app=server.http_app(), client=("127.0.0.1", 32100))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+        landing = await client.get("/oauth/google/connect", headers=navigation)
+        assert landing.status_code == 200
+        assert "Continue to Google" in landing.text
+        assert not connection.pending  # viewing the page cannot start authorization
+        assert (await client.post("/oauth/google/connect", headers=navigation)).status_code == 403
+        assert (await client.get("/oauth/google/events", headers=navigation)).status_code == 403
+        assert (await client.get("/oauth/google/connect", headers={**navigation, "sec-fetch-dest": "iframe"})).status_code == 403
+        assert (await client.get("/oauth/google/connect", headers={**navigation, "host": "external.example"})).status_code == 403
+        result = await client.post("/oauth/google/connect", headers={"sec-fetch-site": "same-origin"})
+        assert result.status_code == 303
+        assert "https://accounts.google.com" in result.headers["content-security-policy"]
+        connection.store.load.assert_not_called()
