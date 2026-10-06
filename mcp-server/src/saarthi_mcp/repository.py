@@ -57,7 +57,7 @@ class HouseholdRepository(Protocol):
     def recent_events(self, person_id: str, limit: int = 10) -> list[Event]: ...
     def search_events(self, person_id: str, question: str, limit: int = 50) -> list[Event]: ...
     def dose_logs(self, person_id: str, since: datetime | None = None) -> list[DoseLog]: ...
-    def adherence(self, person_id: str, days: int = 7) -> float: ...
+    def adherence(self, person_id: str, days: int = 7) -> float | None: ...
     def add_dose(
         self, person_id: str, med: str, status: DoseStatus, at: datetime
     ) -> tuple[DoseLog, bool]: ...
@@ -160,12 +160,14 @@ class InMemoryRepository:
             raise ValueError("Search limit must be between 1 and 100.")
         return rank_events(question, self._events.get(person_id, []), limit=limit)
 
-    def adherence(self, person_id: str, days: int = 7) -> float:
-        since = now_utc() - timedelta(days=days)
-        logs = [d for d in self._doses.get(person_id, []) if ensure_aware(d.at) >= since]
+    def adherence(self, person_id: str, days: int = 7) -> float | None:
+        """Taken fraction among recorded taken/missed doses; absent records are unknown."""
+        until = now_utc()
+        since = until - timedelta(days=days)
+        logs = [d for d in self._doses.get(person_id, []) if since <= ensure_aware(d.at) <= until]
         counted = [d for d in logs if d.status in (DoseStatus.taken, DoseStatus.missed)]
         if not counted:
-            return 1.0
+            return None
         taken = sum(1 for d in counted if d.status is DoseStatus.taken)
         return round(taken / len(counted), 3)
 

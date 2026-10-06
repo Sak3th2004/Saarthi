@@ -177,10 +177,13 @@ def build_server(repo: HouseholdRepository | None = None, orchestrator=None) -> 
             if appts
             else ""
         )
-        speech = (
-            f"{elder.name} is on {len(meds)} medications with {int(adherence * 100)}% adherence this "
-            f"week.{next_appt}"
+        dose_summary = (
+            "Not enough information: no taken or missed dose records in the past 7 days."
+            if adherence is None else
+            f"{adherence:.0%} of recorded taken/missed doses in the past 7 days were marked taken. "
+            "This does not confirm that every scheduled dose was taken."
         )
+        speech = f"{elder.name} has {len(meds)} medications on record. {dose_summary}{next_appt}"
         return _result(
             HouseholdSummary(
                 person=elder,
@@ -332,29 +335,31 @@ def build_server(repo: HouseholdRepository | None = None, orchestrator=None) -> 
 
     @mcp.tool
     def check_in(person: str) -> ToolResult:
-        """Watch-agent entry point: is the person OK today? Flags missed doses and low supply."""
+        """Report recorded missed doses and low supply, without inferring wellbeing."""
         p = _resolve(person)
-        today_start = now_utc().replace(hour=0, minute=0, second=0, microsecond=0)
+        current = now_utc()
+        today_start = current.replace(hour=0, minute=0, second=0, microsecond=0)
         missed_today = sum(
             1
             for d in repo.dose_logs(p.id, since=today_start)
-            if d.status is DoseStatus.missed
+            if d.status is DoseStatus.missed and ensure_aware(d.at) <= current
         )
         recent = repo.recent_events(p.id, limit=1)
         last_activity = recent[0].at if recent else None
 
         concerns: list[str] = []
         if missed_today:
-            concerns.append(f"{missed_today} missed dose(s) today")
+            concerns.append(f"{missed_today} dose(s) recorded as missed today (UTC)")
         for m in repo.medications_for(p.id):
             if m.supply_count is not None and m.supply_count <= 10:
                 concerns.append(f"low supply of {m.name} ({m.supply_count} left)")
 
-        ok = not concerns
+        ok = False if concerns else None
         speech = (
-            f"{p.name} looks fine today."
-            if ok
-            else f"Heads up on {p.name}: " + "; ".join(concerns) + "."
+            f"No missed doses or low supply are recorded for {p.name} today (UTC). "
+            "Not enough information to confirm how they are doing."
+            if not concerns
+            else f"Recorded concerns for {p.name}: " + "; ".join(concerns) + ". Please check with the family."
         )
         return _result(
             CheckInResult(

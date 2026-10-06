@@ -206,18 +206,19 @@ class Neo4jRepository:
         )
         return [self._event(row["e"]) for row in rows]
 
-    def adherence(self, person_id: str, days: int = 7) -> float:
+    def adherence(self, person_id: str, days: int = 7) -> float | None:
+        until = now_utc()
         recs = self._read(
             """
             MATCH (:Person {id:$id})-[:LOGGED]->(d:Dose)
-            WHERE d.at >= $since AND d.status IN ['taken','missed']
+            WHERE d.at >= $since AND d.at <= $until AND d.status IN ['taken','missed']
             RETURN d.status AS status
             """,
             id=person_id,
-            since=now_utc() - timedelta(days=days),
+            since=until - timedelta(days=days), until=until,
         )
         if not recs:
-            return 1.0
+            return None
         taken = sum(1 for r in recs if r["status"] == "taken")
         return round(taken / len(recs), 3)
 

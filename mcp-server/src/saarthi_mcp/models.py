@@ -81,7 +81,11 @@ class HouseholdSummary(BaseModel):
     medications: list[Medication]
     upcoming_appointments: list[Appointment]
     recent_events: list[Event]
-    adherence_7d: float = Field(ge=0.0, le=1.0, description="Fraction of doses taken, last 7 days")
+    adherence_7d: float | None = Field(
+        ge=0.0, le=1.0,
+        description="Taken fraction among recorded taken/missed doses in the past 7 days; null without records. Not schedule coverage.",
+    )
+    adherence_basis: Literal["recorded_taken_and_missed_doses_only"] = "recorded_taken_and_missed_doses_only"
     speech: str
 
 
@@ -139,7 +143,7 @@ class MemoryAnswer(BaseModel):
 
 class CheckInResult(BaseModel):
     person: Person
-    ok: bool
+    ok: bool | None = Field(description="False if recorded concerns exist; otherwise null. Never confirms wellbeing.")
     missed_doses_today: int
     last_activity: datetime | None
     concerns: list[str] = Field(default_factory=list)

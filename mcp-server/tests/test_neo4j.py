@@ -63,6 +63,17 @@ def test_adherence_reflects_missed_dose(repo):
     assert 0.0 <= a < 1.0  # one seeded evening dose was missed
 
 
+def test_no_dose_records_are_unknown(repo):
+    assert repo.adherence("fam-1") is None
+
+
+def test_future_and_skipped_doses_do_not_count(repo):
+    at = datetime.now(timezone.utc)
+    repo.add_dose("fam-1", "Future test record", DoseStatus.taken, at + timedelta(days=1))
+    repo.add_dose("fam-1", "Skipped test record", DoseStatus.skipped, at)
+    assert repo.adherence("fam-1") is None
+
+
 def test_write_then_recall_from_graph(repo):
     at = datetime.now(timezone.utc)
     _, already = repo.add_dose("elder-1", "Atorvastatin", DoseStatus.taken, at)

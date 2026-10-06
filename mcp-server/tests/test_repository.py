@@ -35,12 +35,12 @@ def test_adherence_is_a_fraction():
     assert a < 1.0
 
 
-def test_adherence_empty_defaults_to_one():
+def test_adherence_empty_is_unknown():
     repo = InMemoryRepository()
     from saarthi_mcp.models import Person, Role
 
     repo.add_person(Person(id="e1", name="Test", role=Role.elder))
-    assert repo.adherence("e1") == 1.0
+    assert repo.adherence("e1") is None
 
 
 def test_add_dose_duplicate_guard():
