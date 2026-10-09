@@ -75,6 +75,10 @@ export function httpCaller(endpoint: () => URL): ToolCaller {
     const transport = new StreamableHTTPClientTransport(endpoint());
     try {
       await sdk.connect(transport, { timeout: 15_000 });
+      const available = await sdk.listTools({}, { timeout: 15_000 });
+      if (!available.tools.some(tool => tool.name === name)) {
+        throw new Error('This server does not provide the requested notebook tool.');
+      }
       const result = await sdk.callTool({ name, arguments: args }, { timeout: 45_000 });
       if (result.isError || result.structuredContent === undefined) throw invalid();
       return result.structuredContent;
