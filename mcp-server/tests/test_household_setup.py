@@ -161,5 +161,5 @@ def test_local_setup_cannot_bind_to_public_or_unexpected_address(monkeypatch, ho
     monkeypatch.setenv("SAARTHI_LOCAL_SETUP", "1")
     monkeypatch.setenv("SAARTHI_HOST", host)
     monkeypatch.setenv("SAARTHI_PORT", port)
-    with pytest.raises(ValueError, match="127.0.0.1:8080"):
+    with pytest.raises(ValueError, match="127.0.0.1:8080|Public binding requires"):
         load_settings()

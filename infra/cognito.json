@@ -1,0 +1,66 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Saarthi household sign-in. No app hosting, IAM roles, users, invitations or SMS resources.",
+  "Parameters": {
+    "DomainPrefix": {"Type": "String", "AllowedPattern": "[a-z0-9][a-z0-9-]{1,60}[a-z0-9]"},
+    "DashboardOrigin": {"Type": "String", "Default": "http://localhost:5173", "AllowedPattern": "https://[A-Za-z0-9.-]+(:[0-9]+)?|http://localhost:[0-9]+"}
+  },
+  "Resources": {
+    "HouseholdPool": {
+      "Type": "AWS::Cognito::UserPool",
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain",
+      "Properties": {
+        "UserPoolName": "saarthi-household",
+        "UserPoolTier": "LITE",
+        "DeletionProtection": "ACTIVE",
+        "AdminCreateUserConfig": {"AllowAdminCreateUserOnly": true},
+        "UsernameAttributes": ["email"],
+        "UsernameConfiguration": {"CaseSensitive": false},
+        "AutoVerifiedAttributes": ["email"],
+        "MfaConfiguration": "ON",
+        "EnabledMfas": ["SOFTWARE_TOKEN_MFA"],
+        "AccountRecoverySetting": {"RecoveryMechanisms": [{"Name": "verified_email", "Priority": 1}]},
+        "Policies": {"PasswordPolicy": {"MinimumLength": 12, "RequireLowercase": true, "RequireUppercase": true, "RequireNumbers": true, "RequireSymbols": true, "TemporaryPasswordValidityDays": 7}},
+        "UserPoolTags": {"project": "saarthi", "purpose": "hackathon"}
+      }
+    },
+    "NotebookScope": {
+      "Type": "AWS::Cognito::UserPoolResourceServer",
+      "Properties": {"UserPoolId": {"Ref": "HouseholdPool"}, "Identifier": "saarthi", "Name": "Saarthi notebook", "Scopes": [{"ScopeName": "notebook", "ScopeDescription": "Access the household notebook; server membership is also required"}]}
+    },
+    "DashboardClient": {
+      "Type": "AWS::Cognito::UserPoolClient",
+      "DependsOn": "NotebookScope",
+      "Properties": {
+        "UserPoolId": {"Ref": "HouseholdPool"},
+        "ClientName": "saarthi-dashboard",
+        "GenerateSecret": false,
+        "AllowedOAuthFlowsUserPoolClient": true,
+        "AllowedOAuthFlows": ["code"],
+        "AllowedOAuthScopes": ["openid", "saarthi/notebook"],
+        "SupportedIdentityProviders": ["COGNITO"],
+        "CallbackURLs": [{"Fn::Sub": "${DashboardOrigin}/auth/callback"}],
+        "LogoutURLs": [{"Fn::Sub": "${DashboardOrigin}/"}],
+        "AccessTokenValidity": 15,
+        "IdTokenValidity": 15,
+        "RefreshTokenValidity": 1,
+        "TokenValidityUnits": {"AccessToken": "minutes", "IdToken": "minutes", "RefreshToken": "days"},
+        "EnableTokenRevocation": true,
+        "PreventUserExistenceErrors": "ENABLED",
+        "ExplicitAuthFlows": ["ALLOW_REFRESH_TOKEN_AUTH"]
+      }
+    },
+    "LoginDomain": {
+      "Type": "AWS::Cognito::UserPoolDomain",
+      "Properties": {"Domain": {"Ref": "DomainPrefix"}, "UserPoolId": {"Ref": "HouseholdPool"}, "ManagedLoginVersion": 1}
+    }
+  },
+  "Outputs": {
+    "UserPoolId": {"Value": {"Ref": "HouseholdPool"}},
+    "ClientId": {"Value": {"Ref": "DashboardClient"}},
+    "LoginDomain": {"Value": {"Fn::Sub": "https://${DomainPrefix}.auth.${AWS::Region}.amazoncognito.com"}},
+    "RedirectUri": {"Value": {"Fn::Sub": "${DashboardOrigin}/auth/callback"}},
+    "ResourceUrl": {"Value": {"Fn::Sub": "${DashboardOrigin}/mcp"}}
+  }
+}

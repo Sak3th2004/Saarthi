@@ -13,6 +13,12 @@ function stub() {
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; }
 
 describe('dashboard lifecycle', () => {
+  it('does not expose local administrator or Calendar controls in authenticated mode', () => {
+    const html = renderToStaticMarkup(createElement(App, { client: stub(), localTools: false }));
+    expect(html).not.toContain('Check household status');
+    expect(html).not.toContain('Connect calendar on this computer');
+    expect(html).toContain('provided by your caregiver');
+  });
   it('starts empty and makes no automatic requests or demo claims', () => {
     const client = stub();
     const html = renderToStaticMarkup(createElement(App, { client }));

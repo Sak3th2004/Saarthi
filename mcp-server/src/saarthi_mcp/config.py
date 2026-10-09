@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from saarthi_mcp.auth import CognitoSettings
 
 try:  # Load mcp-server/.env if python-dotenv is available (dev convenience; prod uses real env).
     from dotenv import load_dotenv
@@ -45,6 +46,7 @@ class Settings:
     bedrock_model_id: str = DEFAULT_BEDROCK_MODEL_ID
     household_file: str | None = None
     local_setup: bool = False
+    cognito: CognitoSettings | None = None
 
     @property
     def url(self) -> str:
@@ -52,9 +54,25 @@ class Settings:
 
 
 def load_settings() -> Settings:
+    auth_mode = os.getenv("SAARTHI_AUTH", "local")
+    if auth_mode not in {"local", "cognito"}:
+        raise ValueError("SAARTHI_AUTH must be 'local' or 'cognito'.")
+    cognito = None
+    if auth_mode == "cognito":
+        cognito = CognitoSettings(
+            region=os.getenv("AWS_REGION", "us-east-1"),
+            pool_id=os.getenv("COGNITO_USER_POOL_ID", ""),
+            client_id=os.getenv("COGNITO_CLIENT_ID", ""),
+            resource_url=os.getenv("COGNITO_RESOURCE_URL", ""),
+            allowed_subjects=frozenset(value.strip() for value in os.getenv("COGNITO_ALLOWED_SUBJECTS", "").split(",") if value.strip()),
+        )
+    elif os.getenv("SAARTHI_HOST", "127.0.0.1") not in {"127.0.0.1", "localhost", "::1"}:
+        raise ValueError("Public binding requires SAARTHI_AUTH=cognito and household access configuration.")
     local_setup = os.getenv("SAARTHI_LOCAL_SETUP", "0")
     if local_setup not in {"0", "1"}:
         raise ValueError("SAARTHI_LOCAL_SETUP must be '0' or '1'.")
+    if auth_mode == "cognito" and (local_setup == "1" or os.getenv("SAARTHI_GOOGLE_CONFIG")):
+        raise ValueError("Cognito mode cannot expose the local administrator or local Calendar routes.")
     if local_setup == "1" and (os.getenv("SAARTHI_HOST", "127.0.0.1") != "127.0.0.1"
                                or os.getenv("SAARTHI_PORT", "8080") != "8080"):
         raise ValueError("Local household setup requires 127.0.0.1:8080.")
@@ -84,4 +102,5 @@ def load_settings() -> Settings:
         bedrock_model_id=model_id,
         household_file=os.getenv("SAARTHI_HOUSEHOLD_FILE") or None,
         local_setup=local_setup == "1",
+        cognito=cognito,
     )

@@ -20,6 +20,7 @@ from fastmcp.exceptions import ToolError
 from fastmcp.tools.base import ToolResult
 
 from saarthi_mcp.config import Settings, load_settings
+from saarthi_mcp.auth import HouseholdTokenVerifier
 from saarthi_mcp.graph import MemoryGraph, memory_graph
 from saarthi_mcp.models import (
     AppointmentList,
@@ -84,6 +85,7 @@ def build_server(repo: HouseholdRepository | None = None, orchestrator=None) -> 
         )
     mcp = FastMCP(
         name="Saarthi",
+        auth=HouseholdTokenVerifier(settings.cognito) if settings.cognito else None,
         instructions=(
             "Saarthi is a care companion with memory for an elderly household. Use these tools to "
             "read and update medications, appointments, events, and family notifications, and to "

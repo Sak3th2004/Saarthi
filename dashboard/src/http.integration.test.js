@@ -33,7 +33,7 @@ it.runIf(process.env.SAARTHI_RUN_DASHBOARD_HTTP_TEST === '1')('saves and recalls
     const python = process.env.SAARTHI_TEST_PYTHON ?? resolve(root, process.platform === 'win32' ? 'mcp-server/.venv/Scripts/python.exe' : 'mcp-server/.venv/bin/python');
     backend = spawn(python, ['-m', 'saarthi_mcp'], {
       cwd: root, windowsHide: true, stdio: 'ignore',
-      env: { ...process.env, SAARTHI_BACKEND: 'memory', SAARTHI_AGENTS: 'off', SAARTHI_HOST: '127.0.0.1', SAARTHI_PORT: String(backendPort), SAARTHI_MCP_PATH: '/mcp', SAARTHI_HOUSEHOLD_FILE: dataFile, SAARTHI_LOCAL_SETUP: '0', SAARTHI_GOOGLE_CONFIG: '' },
+      env: { ...process.env, SAARTHI_AUTH: 'local', SAARTHI_BACKEND: 'memory', SAARTHI_AGENTS: 'off', SAARTHI_HOST: '127.0.0.1', SAARTHI_PORT: String(backendPort), SAARTHI_MCP_PATH: '/mcp', SAARTHI_HOUSEHOLD_FILE: dataFile, SAARTHI_LOCAL_SETUP: '0', SAARTHI_GOOGLE_CONFIG: '' },
     });
     let launchError;
     backend.on('error', e => { launchError = e; });

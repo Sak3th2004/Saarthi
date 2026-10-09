@@ -92,11 +92,13 @@ export function parseView(value: unknown): HouseholdView {
 }
 
 /** Real MCP calls only. A failed mutation is never automatically retried. */
-export function httpCaller(endpoint: () => URL): ToolCaller {
+export function httpCaller(endpoint: () => URL, accessToken?: () => string): ToolCaller {
   return async (name, args) => {
     const { Client, StreamableHTTPClientTransport } = await import('@modelcontextprotocol/client');
     const sdk = new Client({ name: 'saarthi-family-dashboard', version: '0.1.0' });
-    const transport = new StreamableHTTPClientTransport(endpoint());
+    const transport = new StreamableHTTPClientTransport(endpoint(), accessToken ? {
+      requestInit: { headers: { Authorization: 'Bearer ' + accessToken() }, redirect: 'error' },
+    } : undefined);
     try {
       await sdk.connect(transport, { timeout: 15_000 });
       const available = await sdk.listTools({}, { timeout: 15_000 });
