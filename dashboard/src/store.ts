@@ -1,4 +1,5 @@
 import type { DashboardClient, HouseholdView, MemoryAnswer } from './contracts';
+import { notebookErrorMessage } from './notebookErrors';
 
 export interface DashboardState {
   phase: 'idle' | 'loading' | 'ready' | 'error';
@@ -34,8 +35,8 @@ export function createDashboardStore(client: DashboardClient) {
       try {
         const view = await client.load(person.trim());
         if (request === generation) update({ view, phase: 'ready' });
-      } catch {
-        if (request === generation) update({ phase: 'error', error: 'Could not open this notebook. Check the saved person name or ID and that the server is available.' });
+      } catch (error) {
+        if (request === generation) update({ phase: 'error', error: notebookErrorMessage(error, 'Could not open this notebook. Check the saved person name or ID and that the server is available.') });
       }
     },
     async query(question: string, timeZone?: string) {
@@ -47,8 +48,8 @@ export function createDashboardStore(client: DashboardClient) {
       try {
         const answer = await client.queryMemory(person, question.trim(), timeZone);
         if (owner === generation && request === queryGeneration) update({ answer, searching: false });
-      } catch {
-        if (owner === generation && request === queryGeneration) update({ searching: false, queryError: 'Could not retrieve the saved records. Please try again.' });
+      } catch (error) {
+        if (owner === generation && request === queryGeneration) update({ searching: false, queryError: notebookErrorMessage(error, 'Could not retrieve the saved records. Please try again.') });
       }
     },
     async save(type: string, detail: string): Promise<boolean> {
@@ -58,8 +59,8 @@ export function createDashboardStore(client: DashboardClient) {
       update({ saving: true, saveError: '', notice: '' });
       try {
         await client.recordEvent(person, { type: type.trim(), detail: detail.trim() });
-      } catch {
-        if (owner === generation) update({ saving: false, saveError: 'Save was not confirmed. Refresh and check the timeline before submitting again.' });
+      } catch (error) {
+        if (owner === generation) update({ saving: false, saveError: notebookErrorMessage(error, 'Save was not confirmed.') + ' Refresh and check the timeline before submitting again.' });
         return false;
       }
       if (owner !== generation) return true;

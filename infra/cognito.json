@@ -12,7 +12,7 @@
       "UpdateReplacePolicy": "Retain",
       "Properties": {
         "UserPoolName": "saarthi-household",
-        "UserPoolTier": "LITE",
+        "UserPoolTier": "ESSENTIALS",
         "DeletionProtection": "ACTIVE",
         "AdminCreateUserConfig": {"AllowAdminCreateUserOnly": true},
         "UsernameAttributes": ["email"],
@@ -53,7 +53,16 @@
     },
     "LoginDomain": {
       "Type": "AWS::Cognito::UserPoolDomain",
-      "Properties": {"Domain": {"Ref": "DomainPrefix"}, "UserPoolId": {"Ref": "HouseholdPool"}, "ManagedLoginVersion": 1}
+      "Properties": {"Domain": {"Ref": "DomainPrefix"}, "UserPoolId": {"Ref": "HouseholdPool"}, "ManagedLoginVersion": 2}
+    },
+    "DashboardLoginBranding": {
+      "Type": "AWS::Cognito::ManagedLoginBranding",
+      "DependsOn": "LoginDomain",
+      "Properties": {
+        "UserPoolId": {"Ref": "HouseholdPool"},
+        "ClientId": {"Ref": "DashboardClient"},
+        "UseCognitoProvidedValues": true
+      }
     }
   },
   "Outputs": {

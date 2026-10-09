@@ -40,6 +40,7 @@ async def test_correct_signed_household_access_token_is_accepted(identity):
     {"exp": None}, {"exp": "2099999999"}, {"exp": True}, {"exp": 1},
     {"iat": None}, {"iat": True}, {"iat": 9999999999}, {"nbf": 9999999999},
     {"scope": "openid"}, {"iss": "https://other.example"}, {"aud": "https://other.example/mcp"},
+    {"aud": None}, {"aud": []}, {"aud": "client123"},
 ])
 async def test_invalid_token_claims_are_denied(identity, claims):
     _, verifier, token = identity

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { App } from './App';
 import { client, createDashboardClient, httpCaller } from './client';
 import { authConfig, beginLogin, finishLogin, logoutUrl, type AuthConfig, type Session } from './auth';
+import { NotebookAccessError } from './notebookErrors';
 
 export function AuthGate() {
   const configuration = useMemo(() => {
@@ -27,7 +28,7 @@ export function AuthGate() {
     return () => window.clearTimeout(timer);
   }, [session]);
   const authenticated = useMemo(() => createDashboardClient(httpCaller(() => new URL('/mcp', window.location.href), () => {
-    if (!session || Date.now() >= session.expiresAt - 5000) throw new Error('Sign in again.');
+    if (!session || Date.now() >= session.expiresAt - 5000) throw new NotebookAccessError();
     return session.accessToken;
   })), [session]);
   if (!configuration.error && !configuration.config) return <App client={client} />;

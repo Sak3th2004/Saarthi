@@ -1,4 +1,5 @@
 import type { DashboardClient, EventResult, HouseholdView, MemoryAnswer, MemoryGraph, Person, SavedEvent } from './contracts';
+import { NotebookAccessError } from './notebookErrors';
 
 type ObjectValue = Record<string, unknown>;
 export type ToolCaller = (name: string, args: ObjectValue) => Promise<unknown>;
@@ -94,7 +95,7 @@ export function parseView(value: unknown): HouseholdView {
 /** Real MCP calls only. A failed mutation is never automatically retried. */
 export function httpCaller(endpoint: () => URL, accessToken?: () => string): ToolCaller {
   return async (name, args) => {
-    const { Client, StreamableHTTPClientTransport } = await import('@modelcontextprotocol/client');
+    const { Client, StreamableHTTPClientTransport, SdkHttpError, UnauthorizedError } = await import('@modelcontextprotocol/client');
     const sdk = new Client({ name: 'saarthi-family-dashboard', version: '0.1.0' });
     const transport = new StreamableHTTPClientTransport(endpoint(), accessToken ? {
       requestInit: { headers: { Authorization: 'Bearer ' + accessToken() }, redirect: 'error' },
@@ -108,6 +109,11 @@ export function httpCaller(endpoint: () => URL, accessToken?: () => string): Too
       const result = await sdk.callTool({ name, arguments: args }, { timeout: 45_000 });
       if (result.isError || result.structuredContent === undefined) throw invalid();
       return result.structuredContent;
+    } catch (error) {
+      if (error instanceof UnauthorizedError || (error instanceof SdkHttpError && [401, 403].includes(error.status))) {
+        throw new NotebookAccessError();
+      }
+      throw error;
     } finally {
       // Closing a successful response must not turn a saved record into a failure.
       await sdk.close().catch(() => undefined);

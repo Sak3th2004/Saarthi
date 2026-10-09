@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createElement } from 'react';
 import { App } from './App';
 import { createDashboardStore } from './store';
+import { NotebookAccessError } from './notebookErrors';
 import type { DashboardClient, HouseholdView, MemoryAnswer } from './contracts';
 
 const person = { id: 'saved-person', name: 'User supplied name', role: 'elder' as const };
@@ -43,6 +44,28 @@ describe('dashboard lifecycle', () => {
     await store.load('unknown');
     expect(store.getSnapshot().view).toBeNull();
     expect(store.getSnapshot().phase).toBe('error');
+  });
+  it('distinguishes rejected sign-in from an unknown person without leaking error details', async () => {
+    const client = stub(); const store = createDashboardStore(client);
+    await store.load('person');
+    const error = new NotebookAccessError(); error.message = 'private token or server response';
+    client.load.mockRejectedValueOnce(error);
+    await store.load('person');
+    expect(store.getSnapshot().view).toBeNull();
+    expect(store.getSnapshot().error).toContain('sign-in was not accepted');
+    expect(store.getSnapshot().error).not.toContain('private');
+  });
+  it('reports rejected access during recall and saving without retrying a write', async () => {
+    const client = stub(); const store = createDashboardStore(client);
+    await store.load('person');
+    client.queryMemory.mockRejectedValueOnce(new NotebookAccessError());
+    await store.query('callback');
+    expect(store.getSnapshot().queryError).toContain('sign-in was not accepted');
+    client.recordEvent.mockRejectedValueOnce(new NotebookAccessError());
+    expect(await store.save('note', 'entered text')).toBe(false);
+    expect(store.getSnapshot().saveError).toContain('sign-in was not accepted');
+    expect(store.getSnapshot().saveError).toContain('before submitting again');
+    expect(client.recordEvent).toHaveBeenCalledTimes(1);
   });
   it('preserves save acknowledgement when refreshing fails', async () => {
     const client = stub(); const store = createDashboardStore(client);

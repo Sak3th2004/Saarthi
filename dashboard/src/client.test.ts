@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createDashboardClient, parseView } from './client';
+import { createDashboardClient, httpCaller, parseView } from './client';
+import { NotebookAccessError } from './notebookErrors';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryMap } from './Graph';
@@ -28,6 +29,19 @@ function familyGraph(): MemoryGraph {
 }
 
 describe('real-record contract', () => {
+  it.each([401, 403])('maps HTTP %s from the actual MCP transport to a safe access error', async status => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response('private server response', {
+      status, headers: { 'WWW-Authenticate': 'Bearer realm="mcp"' },
+    }));
+    vi.stubGlobal('fetch', fetcher);
+    try {
+      const call = httpCaller(() => new URL('http://localhost:5173/mcp'), () => 'test-only-token');
+      await expect(call('get_memory_graph', { person: 'saved-person' })).rejects.toBeInstanceOf(NotebookAccessError);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
   it('passes the explicitly selected timezone through MCP recall', async () => {
     const call = vi.fn().mockResolvedValue({ person: { id: 'person', name: 'Entered name', role: 'elder' }, question: 'callback today', answer: 'Saved fact', supporting_events: [], speech: 'Saved fact' });
     await createDashboardClient(call).queryMemory('person', 'callback today', 'Asia/Kolkata');
