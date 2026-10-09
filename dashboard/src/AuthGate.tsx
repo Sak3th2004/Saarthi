@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { App } from './App';
 import { client, createDashboardClient, httpCaller } from './client';
-import { authConfig, beginLogin, finishLogin, logoutUrl, type AuthConfig, type Session } from './auth';
+import { authConfig, beginLogin, finishLogin, logoutUrl, signInErrorMessage, type AuthConfig, type Session } from './auth';
 import { NotebookAccessError } from './notebookErrors';
 
 export function AuthGate() {
@@ -19,8 +19,9 @@ export function AuthGate() {
     const callback = new URL(window.location.href);
     window.history.replaceState({}, '', '/');
     setBusy(true);
-    void finishLogin(configuration.config, callback, window.sessionStorage).then(setSession)
-      .catch(() => setError('Sign-in could not be completed. Please try again.')).finally(() => setBusy(false));
+    const config = configuration.config;
+    void Promise.resolve().then(() => finishLogin(config, callback, window.sessionStorage)).then(setSession)
+      .catch(error => setError(signInErrorMessage(error))).finally(() => setBusy(false));
   }, [configuration]);
   useEffect(() => {
     if (!session) return;
@@ -35,7 +36,7 @@ export function AuthGate() {
   async function signIn(config: AuthConfig) {
     setBusy(true); setError('');
     try { window.location.assign(await beginLogin(config, window.sessionStorage)); }
-    catch { setBusy(false); setError('Could not start sign-in. Check your browser storage settings.'); }
+    catch (error) { setBusy(false); setError(signInErrorMessage(error)); }
   }
   if (session && configuration.config) return <>
     <div className="auth-controls"><button className="button secondary" onClick={() => { setSession(null); window.location.assign(logoutUrl(configuration.config!)); }}>Sign out</button></div>

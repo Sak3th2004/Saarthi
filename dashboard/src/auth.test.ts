@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { authConfig, beginLogin, finishLogin } from './auth';
+import { authConfig, beginLogin, finishLogin, SignInError, signInErrorMessage } from './auth';
 
 const env = { VITE_AUTH_MODE: 'cognito', VITE_COGNITO_DOMAIN: 'https://notebook.auth.us-east-1.amazoncognito.com',
   VITE_COGNITO_CLIENT_ID: 'client123', VITE_COGNITO_RESOURCE_URL: 'http://localhost:5173/mcp',
@@ -51,5 +51,55 @@ describe('Cognito sign-in', () => {
     await expect(finishLogin(config, callback, saved, fetcher, condition === 'expired' ? 602000 : 2000)).rejects.toThrow();
     expect(fetcher).not.toHaveBeenCalled();
     expect(saved.length).toBe(0);
+  });
+  it('reports a missing pending request without attempting a token exchange', async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    await expect(finishLogin(config, new URL(config.redirect + '?code=private&state=private'), storage(), fetcher))
+      .rejects.toMatchObject({ code: 'AUTH_START' });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+  it('handles blocked browser storage without revealing its exception', async () => {
+    const saved = storage(); saved.setItem = () => { throw new Error('private browser state'); };
+    await expect(beginLogin(config, saved)).rejects.toMatchObject({ code: 'AUTH_STORAGE' });
+    saved.getItem = () => { throw new Error('private browser state'); };
+    await expect(finishLogin(config, new URL(config.redirect), saved)).rejects.toMatchObject({ code: 'AUTH_STORAGE' });
+  });
+  it.each([
+    ['invalid_grant', 'AUTH_CODE'], ['invalid_client', 'AUTH_CLIENT'],
+    ['unauthorized_client', 'AUTH_CLIENT'], ['private-unknown-error', 'AUTH_EXCHANGE'],
+  ])('classifies %s with no response text or request secrets', async (providerError, expected) => {
+    const saved = storage(); const login = new URL(await beginLogin(config, saved, 1000));
+    const callback = new URL(config.redirect + '?code=private-code&state=' + login.searchParams.get('state'));
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ error: providerError, error_description: 'private details' }, { status: 400 }));
+    await expect(finishLogin(config, callback, saved, fetcher, 2000)).rejects.toMatchObject({ code: expected });
+    expect(saved.length).toBe(0);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls[0][1]?.redirect).toBe('error');
+  });
+  it.each(['network', 'bad-json', 'empty-json', 'null-json'])('reports %s without leaking content', async condition => {
+    const saved = storage(); const login = new URL(await beginLogin(config, saved, 1000));
+    const callback = new URL(config.redirect + '?code=private-code&state=' + login.searchParams.get('state'));
+    const fetcher = vi.fn<typeof fetch>();
+    if (condition === 'network') fetcher.mockRejectedValue(new Error('private connection details'));
+    else fetcher.mockResolvedValue(condition === 'bad-json' ? new Response('private non-JSON body') : Response.json(condition === 'null-json' ? null : {}));
+    await expect(finishLogin(config, callback, saved, fetcher, 2000)).rejects.toMatchObject({ code: condition === 'network' ? 'AUTH_NETWORK' : 'AUTH_SESSION' });
+    expect(saved.length).toBe(0);
+  });
+  it.each(['access_denied', 'invalid_request', 'private-unrecognized-error'])('reports provider callback %s only after state validation', async providerError => {
+    const saved = storage(); const login = new URL(await beginLogin(config, saved, 1000));
+    const callback = new URL(config.redirect);
+    callback.search = new URLSearchParams({ state: login.searchParams.get('state')!, error: providerError, error_description: 'private provider details' }).toString();
+    const fetcher = vi.fn<typeof fetch>();
+    await expect(finishLogin(config, callback, saved, fetcher, 2000)).rejects.toMatchObject({ code: providerError === 'access_denied' ? 'AUTH_DENIED' : 'AUTH_PROVIDER' });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+  it('does not trust an error message or an arbitrary diagnostic code', () => {
+    const error = new SignInError('AUTH_CODE'); error.message = 'private password';
+    expect(signInErrorMessage(error)).toContain('AUTH_CODE');
+    expect(signInErrorMessage(error)).not.toContain('private');
+    expect(signInErrorMessage(new Error('private server response'))).toContain('AUTH_UNKNOWN');
+    Object.defineProperty(error, 'code', { value: 'private callback URL' });
+    expect(signInErrorMessage(error)).toContain('AUTH_UNKNOWN');
+    expect(signInErrorMessage(error)).not.toContain('private');
   });
 });
