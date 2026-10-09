@@ -1,9 +1,11 @@
 import { useState } from 'react';
+import type { Person } from './contracts';
+import { AppointmentEditor } from './AppointmentEditor';
 
 type CalendarEvent = { id: string; summary: string; start: { date?: string; dateTime?: string }; end: { date?: string; dateTime?: string }; status?: string };
 
 /** Reads the connected calendar only when requested; does not invent or book events. */
-export function Calendar() {
+export function Calendar({ person }: { person?: Person }) {
   const [events, setEvents] = useState<CalendarEvent[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -30,5 +32,6 @@ export function Calendar() {
     {error && <p role="alert" className="notice error">{error}</p>}
     {events && (events.length ? <ul className="routine-list">{events.map(event => <li key={event.id}><div><strong>{event.summary}</strong><p>{event.start.date ? `${event.start.date} · All day` : new Date(event.start.dateTime!).toLocaleString()}</p></div><span className="tag">{event.status ?? 'Calendar event'}</span></li>)}</ul> : <p>No upcoming events were returned by Google Calendar.</p>)}
     {more && <p className="muted">Showing the first 25 upcoming events. More are available in Google Calendar.</p>}
+    {person ? <AppointmentEditor key={person.id} person={person} onSaved={() => void load()} /> : <p className="muted">Open a saved person's notebook to add an appointment with a review before saving.</p>}
   </section>;
 }

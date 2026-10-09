@@ -125,6 +125,47 @@ class CalendarConnection:
             except Exception:
                 raise ValueError("Could not read Calendar. Connect your account again if access expired or was revoked.") from None
 
+    def create_confirmed(self, body):
+        """Insert one reviewed event, reconciling a retry by its stable Google ID.
+
+        Caller supplies a validated body and collects explicit confirmation. No guests
+        or emails are added. An uncertain write is never retried with a different ID.
+        """
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request, AuthorizedSession
+        from saarthi_mcp.calendar_appointments import matching_event
+        with self.io_lock:
+            try:
+                saved = self.store.load()
+                if not saved or saved.get("account", "").casefold() != self.config.account.casefold():
+                    raise ValueError("Not connected")
+                credentials = Credentials.from_authorized_user_info(saved["credentials"], scopes=SCOPES)
+                if credentials.client_id != self.config.client_id:
+                    raise ValueError("Client changed")
+                if not credentials.valid:
+                    transport = Request()
+                    credentials.refresh(lambda **kw: transport(**{**kw, "timeout": 15}))
+                    self.store.save({"account": self.config.account, "credentials": json.loads(credentials.to_json())})
+                with AuthorizedSession(credentials) as session:
+                    url = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+                    existing = session.get(url + "/" + body["id"], timeout=15)
+                    if existing.status_code == 200:
+                        event = existing.json()
+                    elif existing.status_code == 404:
+                        inserted = session.post(url, params={"sendUpdates": "none"}, json=body, timeout=15)
+                        if inserted.status_code == 409:
+                            inserted = session.get(url + "/" + body["id"], timeout=15)
+                        inserted.raise_for_status()
+                        event = inserted.json()
+                    else:
+                        existing.raise_for_status()
+                        raise ValueError("Unexpected Calendar response")
+                if not matching_event(event, body):
+                    raise ValueError("Calendar returned different event details")
+                return event
+            except Exception:
+                raise ValueError("Calendar save was not confirmed. Retry the same reviewed appointment to check its status; do not create another copy.") from None
+
 
 def attach_calendar_routes(server, connection):
     """Register local setup routes. Cookie-bound requests, fixed host, no raw API errors."""

@@ -8,7 +8,10 @@ same interface — the MCP tool contract in ``server.py`` does not change.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import re
+from threading import RLock
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 if TYPE_CHECKING:
     from saarthi_mcp.household import HouseholdDefinition
@@ -44,6 +47,33 @@ class AmbiguousPersonError(PersonNotFoundError):
     """A label matches multiple people; the caller must select a unique ID."""
 
 
+def calendar_appointment(
+    event_id: str, kind: str, start: datetime, end: datetime, timezone_name: str,
+) -> Appointment:
+    """Validate a confirmed calendar record without inferring dates or a timezone."""
+    if not isinstance(event_id, str) or not re.fullmatch(r"[0-9a-f]{32}", event_id):
+        raise ValueError("Calendar event ID must be a generated hexadecimal UUID.")
+    if not isinstance(kind, str) or not kind.strip():
+        raise ValueError("Appointment title is required.")
+    if start.utcoffset() is None or end.utcoffset() is None or end <= start:
+        raise ValueError("Appointment needs explicit timezone offsets and an end after its start.")
+    try:
+        ZoneInfo(timezone_name)
+    except (ZoneInfoNotFoundError, ValueError, TypeError):
+        raise ValueError("Appointment needs a valid IANA timezone.") from None
+    return Appointment(
+        id="google-" + event_id, kind=kind.strip(), when=start, end=end,
+        time_zone=timezone_name, calendar_event_id=event_id,
+    )
+
+
+def calendar_appointment_detail(appt: Appointment) -> str:
+    return (
+        f"Calendar entry saved: {appt.kind}, {appt.when.isoformat()} to "
+        f"{appt.end.isoformat()} ({appt.time_zone}). This is not provider confirmation."
+    )
+
+
 # --------------------------------------------------------------------------- interface
 
 
@@ -62,6 +92,10 @@ class HouseholdRepository(Protocol):
         self, person_id: str, med: str, status: DoseStatus, at: datetime
     ) -> tuple[DoseLog, bool]: ...
     def add_appointment(self, person_id: str, kind: str, when: datetime) -> Appointment: ...
+    def save_calendar_appointment(
+        self, person_id: str, event_id: str, kind: str, start: datetime,
+        end: datetime, timezone_name: str,
+    ) -> Appointment: ...
     def add_event(self, person_id: str, type: str, detail: str, at: datetime) -> Event: ...
     def query_memory(self, person_id: str, question: str) -> tuple[str, list[Event]]: ...
 
@@ -82,6 +116,7 @@ class InMemoryRepository:
         self._relationships: list[tuple[str, str, str]] = []
         self._primary_elder_id: str | None = None
         self._appt_seq = 0
+        self._calendar_lock = RLock()
 
     # -- registration helpers -------------------------------------------------
 
@@ -207,6 +242,25 @@ class InMemoryRepository:
             at=now_utc(),
         )
         return appt
+
+    def save_calendar_appointment(
+        self, person_id: str, event_id: str, kind: str, start: datetime,
+        end: datetime, timezone_name: str,
+    ) -> Appointment:
+        appt = calendar_appointment(event_id, kind, start, end, timezone_name)
+        audit = Event(type="calendar_appointment_saved", detail=calendar_appointment_detail(appt), at=now_utc())
+        with self._calendar_lock:
+            if person_id not in self._people:
+                raise PersonNotFoundError("Unknown person. Use a saved household member's ID.")
+            matches = [(owner, item) for owner, items in self._appts.items()
+                       for item in items if item.id == appt.id]
+            if matches:
+                if len(matches) != 1 or matches[0] != (person_id, appt):
+                    raise ValueError("Calendar appointment conflicts with its saved owner or details.")
+                return matches[0][1].model_copy(deep=True)
+            self._appts.setdefault(person_id, []).append(appt)
+            self._events.setdefault(person_id, []).append(audit)
+        return appt.model_copy(deep=True)
 
     def add_event(self, person_id: str, type: str, detail: str, at: datetime) -> Event:
         event = Event(type=type, detail=detail, at=ensure_aware(at))

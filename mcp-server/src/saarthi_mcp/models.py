@@ -64,6 +64,9 @@ class Appointment(BaseModel):
     id: str
     kind: str
     when: datetime
+    end: datetime | None = None
+    time_zone: str | None = None
+    calendar_event_id: str | None = None
     status: str = Field(default="scheduled", description="Local schedule status; not provider confirmation")
 
 

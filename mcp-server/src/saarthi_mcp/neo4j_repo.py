@@ -26,7 +26,9 @@ from saarthi_mcp.models import (
     Person,
     Role,
 )
-from saarthi_mcp.repository import AmbiguousPersonError, PersonNotFoundError
+from saarthi_mcp.repository import (
+    AmbiguousPersonError, PersonNotFoundError, calendar_appointment, calendar_appointment_detail,
+)
 from saarthi_mcp.timeutil import ensure_aware, now_utc
 
 if TYPE_CHECKING:
@@ -97,7 +99,9 @@ class Neo4jRepository:
 
     def _appointment(self, node) -> Appointment:
         return Appointment(
-            id=node["id"], kind=node["kind"], when=_dt(node["when"]), status=node["status"]
+            id=node["id"], kind=node["kind"], when=_dt(node["when"]), status=node["status"],
+            end=_dt(node["end"]) if node.get("end") is not None else None,
+            time_zone=node.get("time_zone"), calendar_event_id=node.get("calendar_event_id"),
         )
 
     def _event(self, node) -> Event:
@@ -279,6 +283,55 @@ class Neo4jRepository:
             now=now_utc(),
         )
         return Appointment(id=aid, kind=kind, when=when, status="scheduled")
+
+    def save_calendar_appointment(
+        self, person_id: str, event_id: str, kind: str, start: datetime,
+        end: datetime, timezone_name: str,
+    ) -> Appointment:
+        """Atomically attach one confirmed calendar entry and its audit to its original owner."""
+        appt = calendar_appointment(event_id, kind, start, end, timezone_name)
+        creation_token = uuid.uuid4().hex
+        at = now_utc()
+
+        def save(tx):
+            row = tx.run(
+                """
+                MATCH (p:Person {id:$person_id})
+                MERGE (a:Appointment {id:$aid})
+                ON CREATE SET a.kind=$kind, a.when=$start, a.end=$end,
+                    a.time_zone=$zone, a.calendar_event_id=$event_id, a.status='scheduled',
+                    a.calendar_creation_token=$token
+                SET a.id=a.id
+                WITH p, a
+                OPTIONAL MATCH (owner)-[:HAS_APPOINTMENT]->(a)
+                RETURN a, collect(owner.id) AS owners, count(owner) AS owner_count,
+                    a.calendar_creation_token=$token AS created
+                """,
+                person_id=person_id, aid=appt.id, kind=appt.kind, start=start, end=end,
+                zone=timezone_name, event_id=event_id, token=creation_token,
+            ).single()
+            if row is None:
+                raise PersonNotFoundError("Unknown person. Use a saved household member's ID.")
+            created = row["created"] is True
+            expected_owners = [] if created else [person_id]
+            if (row["owners"] != expected_owners or row["owner_count"] != len(expected_owners)
+                    or self._appointment(row["a"]) != appt):
+                raise ValueError("Calendar appointment conflicts with its saved owner or details.")
+            if created:
+                tx.run(
+                    """
+                    MATCH (p:Person {id:$person_id}), (a:Appointment {id:$aid})
+                    CREATE (p)-[:HAS_APPOINTMENT]->(a)
+                    CREATE (p)-[:EXPERIENCED]->(:Event {
+                        type:'calendar_appointment_saved', detail:$detail, at:$at})
+                    REMOVE a.calendar_creation_token
+                    """,
+                    person_id=person_id, aid=appt.id, detail=calendar_appointment_detail(appt), at=at,
+                ).consume()
+            return appt
+
+        with self._driver.session(database=self._db) as session:
+            return session.execute_write(save)
 
     def add_event(self, person_id: str, type: str, detail: str, at: datetime) -> Event:
         at = ensure_aware(at)
