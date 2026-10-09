@@ -39,12 +39,20 @@ async def test_correct_signed_household_access_token_is_accepted(identity):
     {"sub": str(uuid4())}, {"sub": ""}, {"sub": None},
     {"exp": None}, {"exp": "2099999999"}, {"exp": True}, {"exp": 1},
     {"iat": None}, {"iat": True}, {"iat": 9999999999}, {"nbf": 9999999999},
-    {"scope": "openid"}, {"iss": "https://other.example"}, {"aud": "https://other.example/mcp"},
+    {"scope": "openid"}, {"scope": "openid saarthi/notebook"},
+    {"scope": "openid https://other.example/mcp/notebook"},
+    {"iss": "https://other.example"}, {"aud": "https://other.example/mcp"},
     {"aud": None}, {"aud": []}, {"aud": "client123"},
 ])
 async def test_invalid_token_claims_are_denied(identity, claims):
     _, verifier, token = identity
     assert await verifier.verify_token(token(**claims)) is None
+
+
+@pytest.mark.parametrize("resource", ["http://localhost:5173/mcp", "https://family.example/mcp"])
+def test_scope_belongs_to_bound_resource(identity, resource):
+    settings = replace(identity[0], resource_url=resource)
+    assert settings.scope == resource + "/notebook"
 
 
 async def test_bad_signature_malformed_token_and_key_failure_fail_closed(identity, monkeypatch):
@@ -93,6 +101,8 @@ async def test_http_rejects_anonymous_calls_even_with_an_existing_session(identi
 @pytest.mark.parametrize("change", [
     {"pool_id": "us-west-2_wrong"}, {"client_id": ""}, {"resource_url": "http://public.example/mcp"},
     {"resource_url": "https://user:password@example.com/mcp"}, {"resource_url": "https://example.com/mcp?secret=x"},
+    {"resource_url": "https://example.com/mcp openid"}, {"resource_url": "https://example.com/mcp\nadmin"},
+    {"resource_url": 'https://example.com/mcp"'},
     {"allowed_subjects": frozenset()}, {"allowed_subjects": frozenset({"not-a-subject-id"})},
 ])
 def test_incomplete_or_unsafe_settings_rejected(identity, change):

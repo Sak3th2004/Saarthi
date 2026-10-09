@@ -23,7 +23,6 @@ class CognitoSettings:
     client_id: str
     resource_url: str
     allowed_subjects: frozenset[str]
-    scope: str = "saarthi/notebook"
 
     def __post_init__(self):
         if not re.fullmatch(r"[a-z]{2}(?:-[a-z]+)+-\d+", self.region):
@@ -33,7 +32,8 @@ class CognitoSettings:
         if not re.fullmatch(r"[a-z0-9]{1,128}", self.client_id):
             raise ValueError("Set a valid COGNITO_CLIENT_ID.")
         resource = urlsplit(self.resource_url)
-        if (not resource.hostname or resource.username or resource.password or resource.query or resource.fragment
+        if (not re.fullmatch(r'[\x21\x23-\x5B\x5D-\x7E]{1,256}', self.resource_url)
+                or not resource.hostname or resource.username or resource.password or resource.query or resource.fragment
                 or not resource.path or resource.path == "/"
                 or (resource.scheme != "https" and not (resource.scheme == "http" and resource.hostname == "localhost"))):
             raise ValueError("COGNITO_RESOURCE_URL must be the HTTPS MCP URL (HTTP localhost allowed for local checks).")
@@ -44,8 +44,11 @@ class CognitoSettings:
                 raise ValueError()
         except (ValueError, TypeError, AttributeError):
             raise ValueError("COGNITO_ALLOWED_SUBJECTS must contain canonical Cognito UUID subject IDs.") from None
-        if not re.fullmatch(r"[A-Za-z0-9._/-]+", self.scope):
-            raise ValueError("Set a valid Cognito resource scope.")
+
+    @property
+    def scope(self):
+        # Cognito resource binding requires custom scopes on this exact resource.
+        return self.resource_url + "/notebook"
 
     @property
     def issuer(self):

@@ -70,6 +70,7 @@ export function authConfig(env: Record<string, string | undefined>, origin: stri
   const url = new URL(redirect), audience = new URL(resource);
   if (url.origin !== origin || url.pathname !== '/auth/callback' || url.search || url.hash || url.username || url.password ||
       (url.protocol !== 'https:' && !(url.protocol === 'http:' && url.hostname === 'localhost')) ||
+      !/^[\x21\x23-\x5B\x5D-\x7E]{1,256}$/.test(resource) ||
       audience.username || audience.password || audience.search || audience.hash || audience.pathname === '/' ||
       (audience.protocol !== 'https:' && !(audience.protocol === 'http:' && audience.hostname === 'localhost'))) throw new Error('The sign-in redirect or resource URL is invalid.');
   return { domain, clientId, resource, redirect };
@@ -83,7 +84,7 @@ export async function beginLogin(config: AuthConfig, storage: Storage, now = Dat
   try { storage.setItem(pendingKey, JSON.stringify({ verifier, state, at: now, config })); }
   catch { throw new SignInError('AUTH_STORAGE'); }
   const params = new URLSearchParams({ response_type: 'code', client_id: config.clientId, redirect_uri: config.redirect,
-    scope: 'openid saarthi/notebook', state, code_challenge: challenge, code_challenge_method: 'S256', resource: config.resource });
+    scope: `openid ${config.resource}/notebook`, state, code_challenge: challenge, code_challenge_method: 'S256', resource: config.resource });
   return config.domain + '/oauth2/authorize?' + params;
 }
 

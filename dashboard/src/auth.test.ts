@@ -24,7 +24,7 @@ describe('Cognito sign-in', () => {
     const url = new URL(await beginLogin(config, saved, 1000));
     expect(url.searchParams.get('code_challenge_method')).toBe('S256');
     expect(url.searchParams.get('resource')).toBe(config.resource);
-    expect(url.searchParams.get('scope')).toBe('openid saarthi/notebook');
+    expect(url.searchParams.get('scope')).toBe('openid http://localhost:5173/mcp/notebook');
     const pending = JSON.parse(saved.getItem('saarthi.cognito.pending')!);
     const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(pending.verifier)));
     const expected = btoa(String.fromCharCode(...digest)).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
@@ -57,6 +57,15 @@ describe('Cognito sign-in', () => {
     await expect(finishLogin(config, new URL(config.redirect + '?code=private&state=private'), storage(), fetcher))
       .rejects.toMatchObject({ code: 'AUTH_START' });
     expect(fetcher).not.toHaveBeenCalled();
+  });
+  it('assigns the notebook scope to the requested production resource', async () => {
+    const deployed = { ...config, resource: 'https://family.example/mcp', redirect: 'https://family.example/auth/callback' };
+    const login = new URL(await beginLogin(deployed, storage()));
+    expect(login.searchParams.get('resource')).toBe('https://family.example/mcp');
+    expect(login.searchParams.get('scope')?.split(' ')).toEqual(['openid', 'https://family.example/mcp/notebook']);
+  });
+  it.each(['https://family.example/mcp openid', 'https://family.example/mcp\nadmin', 'https://family.example/mcp"'])('rejects a resource that could alter the OAuth scope: %s', resource => {
+    expect(() => authConfig({ ...env, VITE_COGNITO_RESOURCE_URL: resource }, 'http://localhost:5173')).toThrow();
   });
   it('handles blocked browser storage without revealing its exception', async () => {
     const saved = storage(); saved.setItem = () => { throw new Error('private browser state'); };

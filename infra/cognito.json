@@ -27,7 +27,7 @@
     },
     "NotebookScope": {
       "Type": "AWS::Cognito::UserPoolResourceServer",
-      "Properties": {"UserPoolId": {"Ref": "HouseholdPool"}, "Identifier": "saarthi", "Name": "Saarthi notebook", "Scopes": [{"ScopeName": "notebook", "ScopeDescription": "Access the household notebook; server membership is also required"}]}
+      "Properties": {"UserPoolId": {"Ref": "HouseholdPool"}, "Identifier": {"Fn::Sub": "${DashboardOrigin}/mcp"}, "Name": "Saarthi notebook", "Scopes": [{"ScopeName": "notebook", "ScopeDescription": "Access the household notebook; server membership is also required"}]}
     },
     "DashboardClient": {
       "Type": "AWS::Cognito::UserPoolClient",
@@ -38,7 +38,7 @@
         "GenerateSecret": false,
         "AllowedOAuthFlowsUserPoolClient": true,
         "AllowedOAuthFlows": ["code"],
-        "AllowedOAuthScopes": ["openid", "saarthi/notebook"],
+        "AllowedOAuthScopes": ["openid", {"Fn::Sub": "${NotebookScope}/notebook"}],
         "SupportedIdentityProviders": ["COGNITO"],
         "CallbackURLs": [{"Fn::Sub": "${DashboardOrigin}/auth/callback"}],
         "LogoutURLs": [{"Fn::Sub": "${DashboardOrigin}/"}],
