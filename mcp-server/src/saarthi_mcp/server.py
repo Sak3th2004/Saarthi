@@ -310,12 +310,15 @@ def build_server(repo: HouseholdRepository | None = None, orchestrator=None) -> 
 
     @mcp.tool
     @_orchestrated("query_memory")
-    def query_memory(person: str, question: str) -> ToolResult:
-        """Answer a question from the household memory (cross-session recall). Never gives medical advice."""
+    def query_memory(person: str, question: str, time_zone: Annotated[str | None, Field(max_length=80)] = None) -> ToolResult:
+        """Recall saved facts. Supply the user's IANA time_zone for today/yesterday or dayparts.
+
+        Never assume the server's timezone is the household's timezone. Never gives medical advice.
+        """
         p = _resolve(person)
         q = (question or "").lower()
         if any(m in q for m in _ADVICE_MARKERS):
-            answer, events = repo.query_memory(p.id, question)
+            answer, events = repo.query_memory(p.id, question, time_zone=time_zone)
             safe = (
                 "I can share what's on record, but I can't give medical advice - please talk to the "
                 f"doctor. Here's what I have: {answer}"
@@ -325,7 +328,7 @@ def build_server(repo: HouseholdRepository | None = None, orchestrator=None) -> 
                     person=p, question=question, answer=safe, supporting_events=events, speech=safe
                 )
             )
-        answer, events = repo.query_memory(p.id, question)
+        answer, events = repo.query_memory(p.id, question, time_zone=time_zone)
         return _result(
             MemoryAnswer(
                 person=p, question=question, answer=answer, supporting_events=events, speech=answer
@@ -381,6 +384,9 @@ def run() -> None:
     settings = load_settings()
     repository = _default_repo(settings)
     server = build_server(repo=repository)
+    if settings.local_setup:
+        from saarthi_mcp.household_setup import HouseholdSetup, attach_household_setup
+        attach_household_setup(server, HouseholdSetup(repository, persistent=settings.backend == "neo4j"))
     from saarthi_mcp.google_calendar import configured_calendar, attach_calendar_routes
     calendar = configured_calendar(settings)
     if calendar is not None:

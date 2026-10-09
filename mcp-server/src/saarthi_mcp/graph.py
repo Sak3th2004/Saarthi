@@ -29,7 +29,8 @@ class GraphNode(BaseModel):
 class GraphEdge(BaseModel):
     source: str
     target: str
-    relation: Literal["TAKES", "HAS_APPOINTMENT", "EXPERIENCED"]
+    relation: Literal["TAKES", "HAS_APPOINTMENT", "EXPERIENCED", "RELATED_TO"]
+    detail: str | None = None
 
 
 class MemoryGraph(BaseModel):
@@ -62,7 +63,17 @@ def memory_graph(repo: HouseholdRepository, person: Person, limit: int = 30) -> 
     )
     nodes = {root.id: root}
     edges = {}
-    truncated = {}
+    links = repo.relationships_for(person.id, limit=limit + 1)
+    truncated = {"person": len(links) > limit}
+    for link in links[:limit]:
+        source_id = _identity(person.id, "person", {"id": link.source.id})
+        target_id = _identity(person.id, "person", {"id": link.target.id})
+        for member, node_id in ((link.source, source_id), (link.target, target_id)):
+            nodes[node_id] = GraphNode(id=node_id, kind="person", label=member.name,
+                                      record=member.model_dump(mode="json", include={"id", "name", "role"}))
+        edges[(source_id, target_id, link.relation)] = GraphEdge(
+            source=source_id, target=target_id, relation="RELATED_TO", detail=link.relation,
+        )
     collections = (
         ("medication", "TAKES", sorted(repo.medications_for(person.id), key=lambda m: (m.name, m.dose))),
         ("appointment", "HAS_APPOINTMENT", repo.upcoming_appointments(person.id, limit=limit + 1)),

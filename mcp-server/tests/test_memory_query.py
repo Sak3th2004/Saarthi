@@ -79,16 +79,18 @@ def test_evidence_matches_medication_and_logged_timestamp():
 
 
 def test_named_medication_and_time_window_both_filter_records():
-    morning = datetime(2026, 9, 10, 8).astimezone()
+    morning = datetime(2026, 9, 10, 8, tzinfo=timezone.utc)
     evening = morning.replace(hour=20)
     logs = [
         DoseLog(med="Amlodipine", status=DoseStatus.taken, at=evening),
         DoseLog(med="Metformin", status=DoseStatus.missed, at=evening),
         DoseLog(med="Metformin", status=DoseStatus.taken, at=morning),
     ]
-    answer, _ = answer_question("Ramesh", "Did dad take Metformin this morning?", logs, [])
+    answer, _ = answer_question("Ramesh", "Did dad take Metformin this morning?", logs, [],
+                                time_zone="UTC", now=evening + timedelta(hours=1))
     assert "took Metformin" in answer
-    generic, _ = answer_question("Ramesh", "Did dad take his evening pills?", logs, [])
+    generic, _ = answer_question("Ramesh", "Did dad take his evening pills?", logs, [],
+                                 time_zone="UTC", now=evening + timedelta(hours=1))
     assert "took Amlodipine" in generic
 
 

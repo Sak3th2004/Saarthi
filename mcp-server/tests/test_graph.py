@@ -64,7 +64,7 @@ def test_limits_are_explicit_and_identical_events_have_one_visual_identity():
     for _ in range(3):
         repo.add_event(person.id, "visit", "Same saved fact", now)
     graph = memory_graph(repo, person, limit=2)
-    assert graph.truncated == {"medication": False, "appointment": False, "event": True}
+    assert graph.truncated == {"person": False, "medication": False, "appointment": False, "event": True}
     assert len([n for n in graph.nodes if n.kind == "event"]) == 1
     assert "more entries" in graph.speech
 
@@ -105,3 +105,28 @@ async def test_empty_server_does_not_generate_graph_nodes(monkeypatch):
     async with Client(build_server(InMemoryRepository())) as client:
         with pytest.raises(ToolError, match="Unknown person"):
             await client.call_tool("get_memory_graph", {"person": "parent"})
+
+
+def test_family_graph_preserves_entered_direction_without_contact_details_or_other_records():
+    from saarthi_mcp.household import HouseholdDefinition
+    elder, family, unrelated = [uuid4().hex for _ in range(3)]
+    repo = InMemoryRepository()
+    repo.import_household(HouseholdDefinition.model_validate({
+        "primary_person_id": elder, "people": [
+            {"id": elder, "name": "Entered older adult", "role": "elder"},
+            {"id": family, "name": "Entered child", "role": "family", "email": "private@example.com"},
+            {"id": unrelated, "name": "Unconnected member", "role": "family"}],
+        "relationships": [{"from_person": family, "to_person": elder, "relation": "daughter"},
+                          {"from_person": elder, "to_person": family, "relation": "mother"}],
+    }))
+    repo.add_event(family, "note", "Other person's private details", datetime.now(timezone.utc))
+    graph = memory_graph(repo, repo.primary_elder())
+    ids = {node.record["id"]: node.id for node in graph.nodes if node.kind == "person"}
+    assert set(ids) == {elder, family}
+    assert {(e.source, e.target, e.detail) for e in graph.edges if e.relation == "RELATED_TO"} == {
+        (ids[family], ids[elder], "daughter"), (ids[elder], ids[family], "mother")}
+    assert "private@example.com" not in graph.model_dump_json()
+    assert "Other person's private details" not in graph.model_dump_json()
+    bounded = memory_graph(repo, repo.primary_elder(), limit=1)
+    assert bounded.truncated["person"]
+    assert sum(e.relation == "RELATED_TO" for e in bounded.edges) == 1

@@ -54,6 +54,12 @@ class Medication(BaseModel):
     supply_count: int | None = Field(default=None, description="Doses remaining, if tracked")
 
 
+class FamilyRelationship(BaseModel):
+    source: Person
+    target: Person
+    relation: str = Field(min_length=1)
+
+
 class DoseLog(BaseModel):
     med: str
     status: DoseStatus

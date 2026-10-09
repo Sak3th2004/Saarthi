@@ -22,6 +22,7 @@ from saarthi_mcp.models import (
     DoseLog,
     DoseStatus,
     Event,
+    FamilyRelationship,
     Medication,
     Person,
     Role,
@@ -79,9 +80,11 @@ def calendar_appointment_detail(appt: Appointment) -> str:
 
 @runtime_checkable
 class HouseholdRepository(Protocol):
+    def import_household(self, definition: HouseholdDefinition) -> None: ...
     def resolve_person(self, person: str) -> Person: ...
     def primary_elder(self) -> Person: ...
     def family_contacts(self) -> list[Person]: ...
+    def relationships_for(self, person_id: str, limit: int = 30) -> list[FamilyRelationship]: ...
     def medications_for(self, person_id: str) -> list[Medication]: ...
     def upcoming_appointments(self, person_id: str, limit: int = 5) -> list[Appointment]: ...
     def recent_events(self, person_id: str, limit: int = 10) -> list[Event]: ...
@@ -97,7 +100,7 @@ class HouseholdRepository(Protocol):
         end: datetime, timezone_name: str,
     ) -> Appointment: ...
     def add_event(self, person_id: str, type: str, detail: str, at: datetime) -> Event: ...
-    def query_memory(self, person_id: str, question: str) -> tuple[str, list[Event]]: ...
+    def query_memory(self, person_id: str, question: str, *, time_zone: str | None = None) -> tuple[str, list[Event]]: ...
 
 
 # --------------------------------------------------------------------------- in-memory impl
@@ -122,6 +125,10 @@ class InMemoryRepository:
 
     def import_household(self, definition: HouseholdDefinition) -> None:
         """Load validated user records into an empty process-local store."""
+        with self._calendar_lock:
+            self._import_empty_household(definition)
+
+    def _import_empty_household(self, definition: HouseholdDefinition) -> None:
         if any((self._people, self._meds, self._doses, self._appts, self._events)):
             raise ValueError("Household import requires an empty store; existing records were not changed.")
         staged = InMemoryRepository()
@@ -133,6 +140,7 @@ class InMemoryRepository:
             staged.add_event(person.id, "household_setup", "User-supplied household records imported.", at)
         staged._primary_elder_id = definition.primary_person_id
         staged._relationships = [(r.from_person, r.to_person, r.relation) for r in definition.relationships]
+        staged._calendar_lock = self._calendar_lock
         self.__dict__.update(staged.__dict__)
 
     def add_person(self, person: Person, aliases: list[str] | None = None) -> None:
@@ -167,6 +175,15 @@ class InMemoryRepository:
 
     def family_contacts(self) -> list[Person]:
         return [p for p in self._people.values() if p.role is Role.family]
+
+    def relationships_for(self, person_id: str, limit: int = 30) -> list[FamilyRelationship]:
+        if type(limit) is not int or not 1 <= limit <= 101:
+            raise ValueError("Relationship limit must be between 1 and 101.")
+        rows = sorted(set((source, target, relation) for source, target, relation in self._relationships
+                          if person_id in (source, target) and source != target
+                          and source in self._people and target in self._people and relation.strip()))
+        return [FamilyRelationship(source=self._people[source], target=self._people[target], relation=relation)
+                for source, target, relation in rows[:limit]]
 
     def medications_for(self, person_id: str) -> list[Medication]:
         return list(self._meds.get(person_id, []))
@@ -269,7 +286,7 @@ class InMemoryRepository:
 
     # -- memory query ---------------------------------------------------------
 
-    def query_memory(self, person_id: str, question: str) -> tuple[str, list[Event]]:
+    def query_memory(self, person_id: str, question: str, *, time_zone: str | None = None) -> tuple[str, list[Event]]:
         """Cross-session recall over stored state, via the shared heuristic (memory_query)."""
         person = self._people[person_id]
         recent_dose_logs = self.dose_logs(person_id, since=now_utc() - timedelta(days=2))
@@ -279,6 +296,7 @@ class InMemoryRepository:
         return answer_question(
             person.name, question, recent_dose_logs, candidates,
             medication_names=[med.name for med in self.medications_for(person_id)],
+            time_zone=time_zone,
         )
 
 

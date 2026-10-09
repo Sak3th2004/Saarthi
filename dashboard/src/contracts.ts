@@ -13,7 +13,7 @@ export interface MemoryGraph {
   person_id: string;
   generated_at: string;
   nodes: GraphNode[];
-  edges: { source: string; target: string; relation: 'TAKES' | 'HAS_APPOINTMENT' | 'EXPERIENCED' }[];
+  edges: { source: string; target: string; relation: 'TAKES' | 'HAS_APPOINTMENT' | 'EXPERIENCED' | 'RELATED_TO'; detail?: string }[];
   truncated: Record<string, boolean>;
   speech: string;
 }
@@ -35,5 +35,5 @@ export interface MemoryAnswer {
 export interface DashboardClient {
   load(person: string): Promise<HouseholdView>;
   recordEvent(person: string, event: { type: string; detail: string }): Promise<EventResult>;
-  queryMemory(person: string, question: string): Promise<MemoryAnswer>;
+  queryMemory(person: string, question: string, timeZone?: string): Promise<MemoryAnswer>;
 }

@@ -64,6 +64,36 @@ def test_real_import_survives_reconnection_without_fabricated_history(empty_grap
         reader.close()
 
 
+def test_reviewed_setup_is_atomic_persistent_and_cannot_replace_household(empty_graph):
+    from saarthi_mcp.household_setup import HouseholdSetup, SetupError
+
+    service = HouseholdSetup(empty_graph, persistent=True)
+    data = definition()
+    review = service.review(data.model_dump(mode="json"))
+    assert not service.status({})["configured"]
+    confirm = {"review_token": review["review_token"], "confirmed": True}
+    result = service.confirm(confirm)
+    assert result == service.confirm(confirm)
+    reader = Neo4jRepository.from_settings(load_settings().neo4j)
+    try:
+        fresh = HouseholdSetup(reader, persistent=True)
+        assert fresh.status({})["primary_person"]["id"] == data.primary_person_id
+        assert fresh.status({})["persistence"] == "persistent"
+        assert len(reader.recent_events(data.primary_person_id)) == 1
+        assert len(reader._read("MATCH ()-[r:RELATED_TO]->() RETURN r")) == 1
+        from saarthi_mcp.graph import memory_graph
+        graph = memory_graph(reader, reader.primary_elder())
+        family_edges = [e for e in graph.edges if e.relation == "RELATED_TO"]
+        assert len(family_edges) == 1 and family_edges[0].detail == "child"
+        members = {node.id: node.record["id"] for node in graph.nodes if node.kind == "person"}
+        assert members[family_edges[0].source] == data.people[1].id
+        assert members[family_edges[0].target] == data.primary_person_id
+        with pytest.raises(SetupError, match="already saved"):
+            fresh.review(definition().model_dump(mode="json"))
+    finally:
+        reader.close()
+
+
 def test_existing_graph_is_never_overwritten_or_partially_imported(empty_graph):
     first = definition()
     empty_graph.import_household(first)

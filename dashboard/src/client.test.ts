@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createDashboardClient, parseView } from './client';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { MemoryMap } from './Graph';
+import type { MemoryGraph } from './contracts';
 
 function graph() {
   return {
@@ -13,7 +17,22 @@ function graph() {
   };
 }
 
+function familyGraph(): MemoryGraph {
+  const g = graph() as MemoryGraph;
+  // A neighbor comes before the root to prove root selection uses the owner ID.
+  g.nodes.unshift({ id: 'family-node', kind: 'person', label: 'Entered family name', record: { id: 'family-id', name: 'Entered family name', role: 'family' } });
+  g.edges.push({ source: 'family-node', target: 'root', relation: 'RELATED_TO', detail: 'daughter' });
+  g.edges.push({ source: 'root', target: 'family-node', relation: 'RELATED_TO', detail: 'parent' });
+  g.truncated.person = false;
+  return g;
+}
+
 describe('real-record contract', () => {
+  it('passes the explicitly selected timezone through MCP recall', async () => {
+    const call = vi.fn().mockResolvedValue({ person: { id: 'person', name: 'Entered name', role: 'elder' }, question: 'callback today', answer: 'Saved fact', supporting_events: [], speech: 'Saved fact' });
+    await createDashboardClient(call).queryMemory('person', 'callback today', 'Asia/Kolkata');
+    expect(call).toHaveBeenCalledExactlyOnceWith('query_memory', { person: 'person', question: 'callback today', time_zone: 'Asia/Kolkata' });
+  });
   it('loads from the graph without model calls or invented empty-state records', async () => {
     const call = vi.fn().mockResolvedValue(graph());
     const view = await createDashboardClient(call).load('a saved alias');
@@ -40,5 +59,47 @@ describe('real-record contract', () => {
   it('rejects answers belonging to another person', async () => {
     const call = vi.fn().mockResolvedValue({ person: { id: 'other', name: 'Other', role: 'elder' }, question: 'callback?', answer: 'Private', supporting_events: [], speech: 'Private' });
     await expect(createDashboardClient(call).queryMemory('person', 'callback?')).rejects.toThrow();
+  });
+  it('loads saved family links in their original directions without changing the notebook owner', () => {
+    const view = parseView(familyGraph());
+    expect(view.person.id).toBe('arbitrary-person');
+    expect(view.graph.nodes.filter(node => node.kind === 'person')).toHaveLength(2);
+    expect(view.graph.edges.filter(edge => edge.relation === 'RELATED_TO')).toEqual([
+      { source: 'family-node', target: 'root', relation: 'RELATED_TO', detail: 'daughter' },
+      { source: 'root', target: 'family-node', relation: 'RELATED_TO', detail: 'parent' },
+    ]);
+    expect(view.events).toHaveLength(1);
+  });
+  it.each(['disconnected person', 'duplicate person ID', 'nonperson endpoint', 'no root endpoint', 'missing detail', 'blank detail', 'duplicate edge', 'self edge', 'contact field', 'bad truncation'])('rejects family graph with %s', corruption => {
+    const g = familyGraph();
+    if (corruption === 'disconnected person') g.edges = g.edges.filter(edge => edge.relation !== 'RELATED_TO');
+    if (corruption === 'duplicate person ID') g.nodes[0].record.id = g.person_id;
+    if (corruption === 'nonperson endpoint') g.edges[1].source = 'saved';
+    if (corruption === 'no root endpoint') {
+      g.nodes.push({ id: 'another', kind: 'person', label: 'Another', record: { id: 'another-id', name: 'Another', role: 'family' } });
+      g.edges[1].target = 'another';
+    }
+    if (corruption === 'missing detail') delete g.edges[1].detail;
+    if (corruption === 'blank detail') g.edges[1].detail = '  ';
+    if (corruption === 'duplicate edge') g.edges.push({ ...g.edges[1] });
+    if (corruption === 'self edge') g.edges[1].target = 'family-node';
+    if (corruption === 'contact field') g.nodes[0].record.email = 'private@example.invalid';
+    if (corruption === 'bad truncation') Object.assign(g.truncated, { person: 'false' });
+    expect(() => parseView(g)).toThrow();
+  });
+  it('retains compatibility with the original one-person graph and nullable detail serialization', () => {
+    const g = graph();
+    Object.assign(g.edges[0], { detail: null });
+    expect(parseView(g).graph.nodes).toHaveLength(2);
+    expect(parseView(g).graph.truncated.person).toBeUndefined();
+  });
+  it('renders directed relationship labels and keeps the identified owner at the center', () => {
+    const html = renderToStaticMarkup(createElement(MemoryMap, { graph: parseView(familyGraph()).graph }));
+    expect(html).toContain('value="person"');
+    expect(html).toContain('Entered family name → A user: daughter');
+    expect(html).toContain('A user → Entered family name: parent');
+    expect(html).toContain('marker-end=');
+    expect(html).toMatch(/aria-label="person: A user"[^>]*transform="translate\(300, 190\)"/);
+    expect(html).not.toContain('private@example.invalid');
   });
 });

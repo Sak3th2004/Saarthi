@@ -12,11 +12,15 @@ import { createDashboardClient, httpCaller } from './client';
 it.runIf(process.env.SAARTHI_RUN_DASHBOARD_HTTP_TEST === '1')('saves and recalls arbitrary records through Vite, official MCP SDK and real Python HTTP server', async () => {
   const root = fileURLToPath(new URL('../../', import.meta.url));
   const person = 'person-' + randomUUID();
+  const family = 'family-' + randomUUID();
   const marker = 'callback' + randomUUID().replaceAll('-', '');
   const directory = resolve(root, '.test-temp-dashboard-' + randomUUID());
   await mkdir(directory);
   const dataFile = resolve(directory, 'household.json');
-  await writeFile(dataFile, JSON.stringify({ primary_person_id: person, people: [{ id: person, name: 'HTTP test ' + randomUUID(), role: 'elder', medications: [] }] }));
+  await writeFile(dataFile, JSON.stringify({ primary_person_id: person, people: [
+    { id: person, name: 'HTTP test ' + randomUUID(), role: 'elder', medications: [] },
+    { id: family, name: 'HTTP family ' + randomUUID(), role: 'family' },
+  ], relationships: [{ from_person: family, to_person: person, relation: 'child' }] }));
   const reserve = tcpServer();
   await new Promise(r => reserve.listen(0, '127.0.0.1', r));
   const address = reserve.address();
@@ -29,7 +33,7 @@ it.runIf(process.env.SAARTHI_RUN_DASHBOARD_HTTP_TEST === '1')('saves and recalls
     const python = process.env.SAARTHI_TEST_PYTHON ?? resolve(root, process.platform === 'win32' ? 'mcp-server/.venv/Scripts/python.exe' : 'mcp-server/.venv/bin/python');
     backend = spawn(python, ['-m', 'saarthi_mcp'], {
       cwd: root, windowsHide: true, stdio: 'ignore',
-      env: { ...process.env, SAARTHI_BACKEND: 'memory', SAARTHI_AGENTS: 'off', SAARTHI_HOST: '127.0.0.1', SAARTHI_PORT: String(backendPort), SAARTHI_MCP_PATH: '/mcp', SAARTHI_HOUSEHOLD_FILE: dataFile },
+      env: { ...process.env, SAARTHI_BACKEND: 'memory', SAARTHI_AGENTS: 'off', SAARTHI_HOST: '127.0.0.1', SAARTHI_PORT: String(backendPort), SAARTHI_MCP_PATH: '/mcp', SAARTHI_HOUSEHOLD_FILE: dataFile, SAARTHI_LOCAL_SETUP: '0', SAARTHI_GOOGLE_CONFIG: '' },
     });
     let launchError;
     backend.on('error', e => { launchError = e; });
@@ -50,6 +54,10 @@ it.runIf(process.env.SAARTHI_RUN_DASHBOARD_HTTP_TEST === '1')('saves and recalls
     const before = await client.load(person);
     expect(before.medications).toEqual([]);
     expect(before.person.id).toBe(person);
+    const connection = before.graph.edges.find(edge => edge.relation === 'RELATED_TO');
+    expect(connection?.detail).toBe('child');
+    expect(before.graph.nodes.find(node => node.id === connection?.source)?.record.id).toBe(family);
+    expect(before.graph.nodes.find(node => node.id === connection?.target)?.record.id).toBe(person);
     const saved = await client.recordEvent(person, { type: 'call', detail: marker + ' received an unscripted callback' });
     expect(saved.event.detail).toContain(marker);
     const fresh = createDashboardClient(httpCaller(() => new URL('/mcp', base)));
@@ -58,6 +66,8 @@ it.runIf(process.env.SAARTHI_RUN_DASHBOARD_HTTP_TEST === '1')('saves and recalls
     const answer = await fresh.queryMemory(person, marker);
     expect(answer.answer).toContain(marker);
     expect(answer.supporting_events[0].detail).toBe(saved.event.detail);
+    const today = await fresh.queryMemory(person, marker + ' today', 'UTC');
+    expect(today.supporting_events[0].detail).toBe(saved.event.detail);
     await expect(fresh.load('unknown-' + randomUUID())).rejects.toThrow();
   } finally {
     await frontend?.close();

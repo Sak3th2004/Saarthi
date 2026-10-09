@@ -8,9 +8,11 @@ can add graph-native reasoning without changing the tool contract.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from saarthi_mcp.models import DoseLog, DoseStatus, Event
-from saarthi_mcp.timeutil import ensure_aware
+from saarthi_mcp.timeutil import ensure_aware, now_utc
 
 MED_WORDS = {
     "pill", "pills", "dose", "doses", "medication", "medications", "meds",
@@ -33,7 +35,7 @@ _SEARCH_STOP_WORDS = set(
     "did can and for the his her our had has was are what when where which who whom whose does have been were would could should "
     "about this that these those with from into there their please tell show "
     "latest recent record records memory happened".split()
-)
+) | {"today", "yesterday", "morning", "afternoon", "evening"}
 
 
 def event_search_terms(question: str) -> list[str]:
@@ -70,15 +72,48 @@ def _name_pattern(name: str) -> str:
     return r"(?<![\w-])" + re.escape(name.strip()) + r"(?![\w-])"
 
 
-def _time_window(q: str) -> tuple[int, int] | None:
-    words = set(re.findall(r"\w+", q))
-    if words & {"evening", "night"}:
-        return (17, 23)
-    if "morning" in words:
-        return (4, 12)
-    if "afternoon" in words:
-        return (12, 17)
-    return None
+_DAYPARTS = {"morning": (4, 12), "afternoon": (12, 17), "evening": (17, 24)}
+_UNSUPPORTED_TIME = re.compile(
+    r"\b(?:tomorrow|tonight|night|ago|earlier|later|before|after|since|until|between|"
+    r"now|noon|midnight|weekend|weekends|weekday|weekdays|fortnight|lunchtime|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"january|february|march|april|may|june|july|august|september|october|november|december|"
+    r"jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b"
+    r"|\b(?:last|next|past|previous|this)\s+(?:day|week|month|year|hour|minute)s?\b"
+    r"|\b(?:last|previous|next)\s+(?:morning|afternoon|evening)\b"
+    r"|\b\d{1,4}[/-]\d{1,2}(?:[/-]\d{1,4})?\b"
+    r"|\b\d+\s*(?:days?|weeks?|months?|years?|hours?|minutes?|am|pm)\b"
+    r"|\b\d{1,2}:\d{2}\b"
+    r"|\b(?:\d{1,2}(?:st|nd|rd|th)|(?:19|20)\d{2})\b"
+)
+
+
+def _recall_clock(question: str, time_zone: str | None, current: datetime):
+    """Parse only supported date restrictions; never quietly discard another range."""
+    words = set(re.findall(r"\w+", question))
+    parts = words & _DAYPARTS.keys()
+    relative = bool(words & {"today", "yesterday"} or parts)
+    if (_UNSUPPORTED_TIME.search(question) or len(parts) > 1
+            or {"today", "yesterday"} <= words):
+        return None, None, None, (
+            "I can't reliably apply that time range. Please ask about today, yesterday, "
+            "or one morning, afternoon, or evening, and provide your IANA time zone."
+        )
+    zone = timezone.utc
+    if time_zone is not None:
+        try:
+            zone = ZoneInfo(time_zone)
+        except (ZoneInfoNotFoundError, ValueError, TypeError):
+            return None, None, None, "Please provide a valid IANA time zone, such as Asia/Kolkata or UTC."
+    elif relative:
+        return None, None, None, "Please provide your IANA time zone, such as Asia/Kolkata or UTC, to check that time."
+    day = None
+    if relative:
+        day = current.astimezone(zone).date()
+        if "yesterday" in words:
+            day -= timedelta(days=1)
+    window = _DAYPARTS[next(iter(parts))] if parts else None
+    return zone, day, window, None
 
 
 def answer_question(
@@ -87,16 +122,47 @@ def answer_question(
     recent_dose_logs: list[DoseLog],
     recent_events: list[Event],
     medication_names: list[str] | None = None,
+    *,
+    time_zone: str | None = None,
+    now: datetime | None = None,
 ) -> tuple[str, list[Event]]:
-    """Answer a recall question from pre-fetched dose logs (recent, desc) and events (recent, desc)."""
+    """Recall observed records with explicit temporal bounds, independent of server timezone.
+
+    Dayparts mean today's local morning (04–12), afternoon (12–17), or evening
+    (17–24), unless yesterday is specified. Unsupported ranges ask for clarification.
+    """
     q = (question or "").lower()
+    current = ensure_aware(now) if now is not None else now_utc()
+    # Remove saved names before detecting dates: a person or medication can share
+    # a month name, and is not itself a time restriction.
+    names = {name.strip().lower() for name in (medication_names or []) if name.strip()}
+    names.update(d.med.strip().lower() for d in recent_dose_logs if d.med.strip())
+    temporal_question = q
+    for saved_name in sorted(names | {person_name.lower()}, key=len, reverse=True):
+        if saved_name.strip():
+            temporal_question = re.sub(_name_pattern(saved_name), " ", temporal_question)
+    zone, day, window, clarification = _recall_clock(temporal_question, time_zone, current)
+    if clarification:
+        return clarification, []
+
+    def in_scope(at: datetime) -> bool:
+        instant = ensure_aware(at)
+        if instant > current:
+            return False
+        local = instant.astimezone(zone)
+        return ((day is None or local.date() == day)
+                and (window is None or window[0] <= local.hour < window[1]))
+
+    recent_dose_logs = sorted(
+        (dose for dose in recent_dose_logs if in_scope(dose.at)),
+        key=lambda dose: ensure_aware(dose.at), reverse=True,
+    )
     # Recent and relevance-ranked candidates can contain the same stored fact.
     recent_events = list({
         (event.type, event.detail, ensure_aware(event.at)): event for event in recent_events
+        if in_scope(event.at)
     }.values())
 
-    names = {name.strip().lower() for name in (medication_names or []) if name.strip()}
-    names.update(d.med.strip().lower() for d in recent_dose_logs if d.med.strip())
     matched_names = {name for name in names if re.search(_name_pattern(name), q)}
     remainder = q
     for name in sorted(matched_names, key=len, reverse=True):
@@ -112,13 +178,10 @@ def answer_question(
         if matched_names:
             name = next(iter(matched_names))
             logs = [d for d in logs if d.med.strip().lower() == name]
-        window = _time_window(q)
-        if window is not None:
-            lo, hi = window
-            logs = [d for d in logs if lo <= ensure_aware(d.at).astimezone().hour < hi]
         if logs:
             latest = logs[0]
-            when = ensure_aware(latest.at).astimezone().strftime("%A %I:%M %p").lstrip("0")
+            when = ensure_aware(latest.at).astimezone(zone).isoformat(timespec="minutes")
+            when += f" ({time_zone or 'UTC'})"
             answer = f"{person_name} {_VERB[latest.status]} {latest.med} on {when}."
             supporting = [
                 e
@@ -133,6 +196,7 @@ def answer_question(
     ranked = rank_events(question, recent_events, limit=3)
     if ranked:
         top = ranked[0]
-        when = ensure_aware(top.at).isoformat(timespec="minutes")
+        when = ensure_aware(top.at).astimezone(zone).isoformat(timespec="minutes")
+        when += f" ({time_zone or 'UTC'})"
         return f"On {when}: {top.detail}", ranked
     return f"I don't have anything on record about that for {person_name} yet.", []

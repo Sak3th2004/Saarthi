@@ -38,6 +38,8 @@ def main() -> int:
     env = dict(os.environ, SAARTHI_AGENTS="off", SAARTHI_BACKEND="memory",
                SAARTHI_RUN_NEO4J_TESTS="0", SAARTHI_RUN_BEDROCK_TESTS="0")
     env["SAARTHI_HOUSEHOLD_FILE"] = ""
+    env["SAARTHI_LOCAL_SETUP"] = "0"
+    env["SAARTHI_GOOGLE_CONFIG"] = ""
     compose = ["docker", "compose", "-f", str(root / "memory/docker-compose.test.yml")]
     try:
         if args.neo4j:

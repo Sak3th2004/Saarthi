@@ -22,6 +22,7 @@ from saarthi_mcp.models import (
     DoseLog,
     DoseStatus,
     Event,
+    FamilyRelationship,
     Medication,
     Person,
     Role,
@@ -148,6 +149,21 @@ class Neo4jRepository:
     def family_contacts(self) -> list[Person]:
         recs = self._read("MATCH (p:Person {role:'family'}) RETURN p ORDER BY p.name")
         return [self._person(r["p"]) for r in recs]
+
+    def relationships_for(self, person_id: str, limit: int = 30) -> list[FamilyRelationship]:
+        if type(limit) is not int or not 1 <= limit <= 101:
+            raise ValueError("Relationship limit must be between 1 and 101.")
+        rows = self._read(
+            """
+            MATCH (owner:Person {id:$id})-[r:RELATED_TO]-(other:Person)
+            WHERE other.id <> owner.id AND trim(coalesce(r.relation,'')) <> ''
+            WITH DISTINCT startNode(r) AS source, endNode(r) AS target, r.relation AS relation
+            RETURN source, target, relation
+            ORDER BY source.id, target.id, relation LIMIT $limit
+            """, id=person_id, limit=limit,
+        )
+        return [FamilyRelationship(source=self._person(row["source"]), target=self._person(row["target"]),
+                                   relation=row["relation"]) for row in rows]
 
     def medications_for(self, person_id: str) -> list[Medication]:
         recs = self._read(
@@ -347,7 +363,7 @@ class Neo4jRepository:
         )
         return Event(type=type, detail=detail, at=at)
 
-    def query_memory(self, person_id: str, question: str) -> tuple[str, list[Event]]:
+    def query_memory(self, person_id: str, question: str, *, time_zone: str | None = None) -> tuple[str, list[Event]]:
         person = self._person_by_id(person_id)
         recent_dose_logs = self.dose_logs(person_id, since=now_utc() - timedelta(days=2))
         recent_events = self.recent_events(person_id, limit=50)
@@ -355,6 +371,7 @@ class Neo4jRepository:
         return answer_question(
             person.name, question, recent_dose_logs, candidates,
             medication_names=[med.name for med in self.medications_for(person_id)],
+            time_zone=time_zone,
         )
 
     # -- seeding helpers (beyond the read/write interface) --------------------

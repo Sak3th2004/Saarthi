@@ -34,24 +34,48 @@ export function parseView(value: unknown): HouseholdView {
     return { id: text(n.id), kind: n.kind as MemoryGraph['nodes'][number]['kind'], label: text(n.label), record: object(n.record) };
   });
   const ids = new Set(nodes.map(n => n.id));
-  if (ids.size !== nodes.length || nodes.length > 301) throw invalid();
-  const roots = nodes.filter(n => n.kind === 'person');
+  if (ids.size !== nodes.length || nodes.length > 401) throw invalid();
+  const people = nodes.filter(n => n.kind === 'person');
+  const personIds = new Set<string>();
+  for (const node of people) {
+    const saved = person(node.record);
+    if (!saved.id.trim() || !saved.name.trim() || node.label !== saved.name || personIds.has(saved.id) ||
+        Object.keys(node.record).some(key => !['id', 'name', 'role'].includes(key))) throw invalid();
+    personIds.add(saved.id);
+  }
+  if (people.length > 101) throw invalid();
+  const roots = people.filter(n => n.record.id === owner);
   if (roots.length !== 1) throw invalid();
   const member = person(roots[0].record);
   if (member.id !== owner) throw invalid();
   const edges = list(g.edges).map(value => {
     const e = object(value);
-    if (!['TAKES', 'HAS_APPOINTMENT', 'EXPERIENCED'].includes(text(e.relation))) throw invalid();
+    if (!['TAKES', 'HAS_APPOINTMENT', 'EXPERIENCED', 'RELATED_TO'].includes(text(e.relation))) throw invalid();
     const source = text(e.source), target = text(e.target);
-    if (source !== roots[0].id || !ids.has(target) || target === source) throw invalid();
+    if (!ids.has(source) || !ids.has(target) || target === source) throw invalid();
+    const sourceNode = nodes.find(n => n.id === source)!;
     const targetNode = nodes.find(n => n.id === target)!;
+    if (e.relation === 'RELATED_TO') {
+      if (sourceNode.kind !== 'person' || targetNode.kind !== 'person' ||
+          (source !== roots[0].id && target !== roots[0].id) || typeof e.detail !== 'string' || !e.detail.trim()) throw invalid();
+      return { source, target, relation: 'RELATED_TO' as const, detail: e.detail };
+    }
+    if (source !== roots[0].id || (e.detail !== undefined && e.detail !== null)) throw invalid();
     const expected = { medication: 'TAKES', appointment: 'HAS_APPOINTMENT', event: 'EXPERIENCED', person: '' }[targetNode.kind];
     if (e.relation !== expected) throw invalid();
     return { source, target, relation: e.relation as MemoryGraph['edges'][number]['relation'] };
   });
-  if (edges.length !== nodes.length - 1 || new Set(edges.map(e => e.target)).size !== edges.length) throw invalid();
+  const edgeKeys = new Set(edges.map(e => JSON.stringify([e.source, e.target, e.relation, e.detail ?? null])));
+  if (edgeKeys.size !== edges.length || edges.filter(e => e.relation === 'RELATED_TO').length > 100) throw invalid();
+  for (const node of nodes) {
+    if (node.id === roots[0].id) continue;
+    const links = edges.filter(edge => edge.source === node.id || edge.target === node.id);
+    if (!links.length || (node.kind !== 'person' && links.length !== 1)) throw invalid();
+  }
   const truncated = object(g.truncated);
   for (const kind of ['medication', 'appointment', 'event']) if (typeof truncated[kind] !== 'boolean') throw invalid();
+  if (truncated.person !== undefined && typeof truncated.person !== 'boolean') throw invalid();
+  if (Object.values(truncated).some(value => typeof value !== 'boolean')) throw invalid();
   const graph: MemoryGraph = {
     schema_version: 1, person_id: owner, generated_at: date(g.generated_at),
     nodes, edges, truncated: truncated as Record<string, boolean>, speech: text(g.speech),
@@ -98,8 +122,8 @@ export function createDashboardClient(call: ToolCaller): DashboardClient {
       if (member.id !== savedPerson) throw invalid();
       return { person: member, event: event(r.event), speech: text(r.speech) };
     },
-    async queryMemory(savedPerson, question): Promise<MemoryAnswer> {
-      const r = object(await call('query_memory', { person: savedPerson, question }));
+    async queryMemory(savedPerson, question, timeZone): Promise<MemoryAnswer> {
+      const r = object(await call('query_memory', { person: savedPerson, question, ...(timeZone ? { time_zone: timeZone } : {}) }));
       const member = person(r.person);
       if (member.id !== savedPerson || r.question !== question) throw invalid();
       return { person: member, question: text(r.question), answer: text(r.answer), supporting_events: list(r.supporting_events).map(event), speech: text(r.speech) };

@@ -44,6 +44,7 @@ class Settings:
     aws_region: str = "us-east-1"
     bedrock_model_id: str = DEFAULT_BEDROCK_MODEL_ID
     household_file: str | None = None
+    local_setup: bool = False
 
     @property
     def url(self) -> str:
@@ -51,6 +52,12 @@ class Settings:
 
 
 def load_settings() -> Settings:
+    local_setup = os.getenv("SAARTHI_LOCAL_SETUP", "0")
+    if local_setup not in {"0", "1"}:
+        raise ValueError("SAARTHI_LOCAL_SETUP must be '0' or '1'.")
+    if local_setup == "1" and (os.getenv("SAARTHI_HOST", "127.0.0.1") != "127.0.0.1"
+                               or os.getenv("SAARTHI_PORT", "8080") != "8080"):
+        raise ValueError("Local household setup requires 127.0.0.1:8080.")
     backend = os.getenv("SAARTHI_BACKEND", "memory").lower()
     agent_mode = os.getenv("SAARTHI_AGENTS", "off").lower()
     if agent_mode not in {"off", "bedrock"}:
@@ -76,4 +83,5 @@ def load_settings() -> Settings:
         aws_region=os.getenv("AWS_REGION", "us-east-1"),
         bedrock_model_id=model_id,
         household_file=os.getenv("SAARTHI_HOUSEHOLD_FILE") or None,
+        local_setup=local_setup == "1",
     )

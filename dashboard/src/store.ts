@@ -38,14 +38,14 @@ export function createDashboardStore(client: DashboardClient) {
         if (request === generation) update({ phase: 'error', error: 'Could not open this notebook. Check the saved person name or ID and that the server is available.' });
       }
     },
-    async query(question: string) {
+    async query(question: string, timeZone?: string) {
       if (!state.view || !question.trim()) return;
       const request = ++queryGeneration;
       const owner = generation;
       const person = state.view.person.id;
       update({ searching: true, answer: null, queryError: '' });
       try {
-        const answer = await client.queryMemory(person, question.trim());
+        const answer = await client.queryMemory(person, question.trim(), timeZone);
         if (owner === generation && request === queryGeneration) update({ answer, searching: false });
       } catch {
         if (owner === generation && request === queryGeneration) update({ searching: false, queryError: 'Could not retrieve the saved records. Please try again.' });
