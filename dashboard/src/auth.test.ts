@@ -85,13 +85,37 @@ describe('Cognito sign-in', () => {
     await expect(finishLogin(config, callback, saved, fetcher, 2000)).rejects.toMatchObject({ code: condition === 'network' ? 'AUTH_NETWORK' : 'AUTH_SESSION' });
     expect(saved.length).toBe(0);
   });
-  it.each(['access_denied', 'invalid_request', 'private-unrecognized-error'])('reports provider callback %s only after state validation', async providerError => {
+  it.each([
+    ['access_denied', 'AUTH_DENIED'], ['invalid_request', 'AUTH_REQUEST'],
+    ['invalid_scope', 'AUTH_SCOPE'], ['invalid_resource', 'AUTH_RESOURCE'],
+    ['invalid_client', 'AUTH_CLIENT'], ['unauthorized_client', 'AUTH_CLIENT'],
+    ['unsupported_response_type', 'AUTH_FLOW'], ['server_error', 'AUTH_SERVICE'],
+    ['temporarily_unavailable', 'AUTH_SERVICE'], ['login_required', 'AUTH_LOGIN_REQUIRED'],
+    ['private-unrecognized-error', 'AUTH_PROVIDER'], ['toString', 'AUTH_PROVIDER'],
+  ])('reports provider callback %s without exposing provider text', async (providerError, expected) => {
     const saved = storage(); const login = new URL(await beginLogin(config, saved, 1000));
     const callback = new URL(config.redirect);
     callback.search = new URLSearchParams({ state: login.searchParams.get('state')!, error: providerError, error_description: 'private provider details' }).toString();
     const fetcher = vi.fn<typeof fetch>();
-    await expect(finishLogin(config, callback, saved, fetcher, 2000)).rejects.toMatchObject({ code: providerError === 'access_denied' ? 'AUTH_DENIED' : 'AUTH_PROVIDER' });
+    const result = await finishLogin(config, callback, saved, fetcher, 2000).catch(error => error);
+    expect(result).toBeInstanceOf(SignInError);
+    expect(result.code).toBe(expected);
+    expect(signInErrorMessage(result)).not.toContain('private');
+    expect(saved.length).toBe(0);
     expect(fetcher).not.toHaveBeenCalled();
+  });
+  it.each(['wrong-state', 'expired', 'duplicate-error', 'code-and-error'])('rejects malformed provider callbacks: %s', async condition => {
+    const saved = storage(); const login = new URL(await beginLogin(config, saved, 1000));
+    const callback = new URL(config.redirect);
+    callback.search = new URLSearchParams({ state: login.searchParams.get('state')!, error: 'invalid_scope' }).toString();
+    if (condition === 'wrong-state') callback.searchParams.set('state', 'other');
+    if (condition === 'duplicate-error') callback.searchParams.append('error', 'invalid_request');
+    if (condition === 'code-and-error') callback.searchParams.set('code', 'private-code');
+    const fetcher = vi.fn<typeof fetch>();
+    const expected = condition === 'wrong-state' ? 'AUTH_STATE' : condition === 'expired' ? 'AUTH_EXPIRED' : 'AUTH_CALLBACK';
+    await expect(finishLogin(config, callback, saved, fetcher, condition === 'expired' ? 602000 : 2000)).rejects.toMatchObject({ code: expected });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(saved.length).toBe(0);
   });
   it('does not trust an error message or an arbitrary diagnostic code', () => {
     const error = new SignInError('AUTH_CODE'); error.message = 'private password';

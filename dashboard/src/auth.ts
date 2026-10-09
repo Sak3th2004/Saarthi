@@ -13,6 +13,12 @@ const signInMessages = {
   AUTH_SETTINGS: 'The sign-in settings changed while you were signing in. Start a new sign-in.',
   AUTH_DENIED: 'The identity provider did not approve sign-in. Start again to complete the requested steps.',
   AUTH_PROVIDER: 'The identity provider rejected the sign-in configuration. Share this error code with the household administrator.',
+  AUTH_REQUEST: 'The sign-in service rejected the authorization request. Share this error code with the household administrator.',
+  AUTH_SCOPE: 'The sign-in service rejected the requested notebook permissions. Share this error code with the household administrator.',
+  AUTH_RESOURCE: 'The sign-in service rejected the notebook resource address. Share this error code with the household administrator.',
+  AUTH_FLOW: 'The sign-in service does not support the requested authorization flow. Share this error code with the household administrator.',
+  AUTH_SERVICE: 'The sign-in service reported a server error. Try again shortly; if it continues, share this error code with the household administrator.',
+  AUTH_LOGIN_REQUIRED: 'The sign-in service requires a new login. Start sign-in again from this tab.',
   AUTH_CODE: 'The sign-in code was rejected or expired. Start a new sign-in; do not reload an old return page.',
   AUTH_CLIENT: 'The identity provider rejected this dashboard client. Share this error code with the household administrator.',
   AUTH_EXCHANGE: 'The identity provider could not complete the sign-in exchange. Start a new sign-in.',
@@ -21,6 +27,23 @@ const signInMessages = {
   AUTH_UNKNOWN: 'Sign-in could not be completed. Start a new sign-in.',
 } as const;
 type SignInCode = keyof typeof signInMessages;
+
+function providerErrorCode(error: string | null): SignInCode {
+  // Allowlist protocol codes only; provider descriptions may contain personal data.
+  switch (error) {
+    case 'access_denied': return 'AUTH_DENIED';
+    case 'invalid_request': return 'AUTH_REQUEST';
+    case 'invalid_scope': return 'AUTH_SCOPE';
+    case 'invalid_resource': return 'AUTH_RESOURCE';
+    case 'invalid_client':
+    case 'unauthorized_client': return 'AUTH_CLIENT';
+    case 'unsupported_response_type': return 'AUTH_FLOW';
+    case 'server_error':
+    case 'temporarily_unavailable': return 'AUTH_SERVICE';
+    case 'login_required': return 'AUTH_LOGIN_REQUIRED';
+    default: return 'AUTH_PROVIDER';
+  }
+}
 
 export class SignInError extends Error {
   constructor(readonly code: SignInCode) {
@@ -80,7 +103,7 @@ export async function finishLogin(config: AuthConfig, callback: URL, storage: St
   if (JSON.stringify(pending.config) !== JSON.stringify(config)) throw new SignInError('AUTH_SETTINGS');
   if (callback.searchParams.has('error')) {
     if (callback.searchParams.getAll('error').length !== 1 || callback.searchParams.has('code')) throw new SignInError('AUTH_CALLBACK');
-    throw new SignInError(callback.searchParams.get('error') === 'access_denied' ? 'AUTH_DENIED' : 'AUTH_PROVIDER');
+    throw new SignInError(providerErrorCode(callback.searchParams.get('error')));
   }
   if (callback.searchParams.getAll('code').length !== 1) throw new SignInError('AUTH_CALLBACK');
   const code = callback.searchParams.get('code');
