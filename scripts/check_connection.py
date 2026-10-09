@@ -1,21 +1,23 @@
 """Check Neo4j connectivity without reading household records or changing the graph.
 
-Run: python scripts/check_connection.py [--json]
+Run: python scripts/check_connection.py [--json] [--mcp-url http://localhost:5173/mcp]
 Uses NEO4J_URI, NEO4J_USERNAME (default neo4j), NEO4J_PASSWORD, and optional
 NEO4J_DATABASE from the environment, falling back to mcp-server/.env. An unset
 database selects the authenticated user's home database. Nothing is rewritten.
-This checks connectivity only; it does not establish application readiness,
-authorization, backup status, or protection against future Aura inactivity.
+The optional MCP probe checks that anonymous initialization is rejected. It does
+not verify authenticated access, backups, or protection against future inactivity.
 """
 
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import logging
 import os
 from pathlib import Path
 import ssl
+import socket
 from typing import Mapping
 from urllib.parse import urlsplit
 
@@ -33,6 +35,7 @@ MESSAGES = {
     "authentication": "Neo4j rejected authentication or permission to connect. Check credentials locally.",
     "tls": "TLS verification failed. Check the URI, certificate trust and system clock; keep verification enabled.",
     "network": "Neo4j could not be reached. Check its Running status, network access and connection URI.",
+    "dns": "The Neo4j hostname did not resolve. Confirm Aura is Running and the URI matches; after resuming, check for a stale local DNS cache.",
     "database": "Neo4j could not use the selected database. Check its name and availability.",
     "unexpected": "The connection check failed. No exception details or credentials were printed.",
 }
@@ -72,6 +75,8 @@ def classify_error(error: Exception) -> str:
         current = current.__cause__ or current.__context__
     if any(isinstance(item, (ssl.SSLError, CertificateConfigurationError)) for item in chain):
         return "tls"
+    if any(isinstance(item, socket.gaierror) for item in chain):
+        return "dns"
     for item in chain:
         if isinstance(item, AuthError):
             return "authentication"
@@ -120,9 +125,50 @@ def check_connection(settings: Mapping[str, str | None]) -> dict[str, str | bool
     return {"ok": status == "ready", "status": status, "message": MESSAGES[status]}
 
 
+def check_mcp_boundary(url: str) -> dict:
+    """One anonymous initialize, no redirects, tokens, tool calls, or response bodies."""
+    try:
+        parts = urlsplit(url)
+        if (not parts.hostname or parts.username is not None or parts.password is not None
+                or parts.query or parts.fragment or not parts.path or parts.path == "/"
+                or parts.port == 0 or any(character.isspace() for character in url)
+                or (parts.scheme != "https" and not (
+                    parts.scheme == "http" and parts.hostname in {"localhost", "127.0.0.1", "::1"}))):
+            raise ValueError()
+    except ValueError:
+        return {"ok": False, "status": "configuration", "message": "Use an HTTPS MCP URL or HTTP loopback URL, without credentials, query or fragment."}
+    connection = None
+    try:
+        factory = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
+        connection = factory(parts.hostname, port=parts.port, timeout=5)
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-11-25", "capabilities": {},
+            "clientInfo": {"name": "saarthi-readiness-check", "version": "1"},
+        }})
+        connection.request("POST", parts.path, body=body, headers={
+            "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+        })
+        response = connection.getresponse()
+        with response:
+            code = response.status
+            challenge = response.getheader("WWW-Authenticate", "").split()
+            protected = code == 401 and bool(challenge) and challenge[0].lower() == "bearer"
+        return {"ok": protected, "status": "anonymous_rejected" if protected else "unexpected_response",
+                "http_status": code, "message": (
+                    "MCP rejected anonymous initialization with a Bearer challenge; signed-in access still needs verification."
+                    if protected else "MCP did not return the expected Bearer 401. Check backend availability, routing and authentication."
+                )}
+    except Exception:
+        return {"ok": False, "status": "connection_failed", "message": "MCP could not be checked. Check the server address, network and TLS configuration."}
+    finally:
+        if connection is not None:
+            connection.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--json", action="store_true", help="Print a sanitized JSON result")
+    parser.add_argument("--mcp-url", help="Also verify that this MCP endpoint rejects anonymous initialization")
     args = parser.parse_args(argv)
     try:
         settings = configuration(os.environ, Path(__file__).resolve().parents[1] / "mcp-server/.env")
@@ -130,6 +176,10 @@ def main(argv: list[str] | None = None) -> int:
         result = {"ok": False, "status": "configuration", "message": MESSAGES["configuration"]}
     else:
         result = check_connection(settings)
+    if args.mcp_url:
+        boundary = check_mcp_boundary(args.mcp_url)
+        result = {"ok": result["ok"] and boundary["ok"], "database": result, "mcp": boundary,
+                  "message": result["message"] + " " + boundary["message"]}
     print(json.dumps(result) if args.json else result["message"])
     return 0 if result["ok"] else 1
 

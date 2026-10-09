@@ -5,6 +5,9 @@ import json
 import logging
 from pathlib import Path
 import ssl
+import socket
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import MagicMock
 
 from neo4j import READ_ACCESS
@@ -153,3 +156,76 @@ def test_cli_configuration_errors_are_redacted(monkeypatch, capsys):
     result = json.loads(capsys.readouterr().out)
     assert result["status"] == "configuration"
     assert "private-value" not in json.dumps(result)
+
+
+def test_wrapped_dns_failure_is_distinct_and_redacted(settings, connection):
+    _, driver, _, _ = connection
+    error = ServiceUnavailable("private-value")
+    error.__cause__ = socket.gaierror("private-value")
+    driver.verify_connectivity.side_effect = error
+    result = probe.check_connection(settings)
+    assert result["status"] == "dns" and result["ok"] is False
+    assert "private-value" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("url", [
+    "http://example.com/mcp", "https://user:private@example.com/mcp",
+    "https://example.com/mcp?token=private", "https://example.com/mcp#private",
+    "https://example.com/", "file:///mcp", "https://example.com:bad/mcp",
+    "https://example.com:0/mcp", "http://localhost/mcp\n",
+])
+def test_mcp_rejects_unsafe_url_before_network(monkeypatch, url):
+    connect = MagicMock()
+    monkeypatch.setattr(probe.http.client, "HTTPSConnection", connect)
+    monkeypatch.setattr(probe.http.client, "HTTPConnection", connect)
+    result = probe.check_mcp_boundary(url)
+    assert result["status"] == "configuration" and not result["ok"]
+    assert "private" not in json.dumps(result)
+    connect.assert_not_called()
+
+
+@pytest.mark.parametrize("code,challenge,expected", [
+    (401, 'Bearer realm="mcp"', True), (401, "Basic", False),
+    (401, "", False), (200, "", False), (500, "", False), (302, "", False),
+])
+def test_mcp_boundary_over_real_http(code, challenge, expected):
+    received = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            received.append((self.path, dict(self.headers), json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
+            self.send_response(code)
+            if challenge:
+                self.send_header("WWW-Authenticate", challenge)
+            if code == 302:
+                self.send_header("Location", "/private-redirect")
+            self.end_headers()
+
+        def log_message(self, *_):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = probe.check_mcp_boundary(f"http://127.0.0.1:{server.server_port}/mcp")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+    assert result["ok"] is expected and result["http_status"] == code
+    assert len(received) == 1  # Redirects are never followed.
+    path, headers, request = received[0]
+    assert path == "/mcp" and "Authorization" not in headers and "Cookie" not in headers
+    assert request["method"] == "initialize" and request["params"]["capabilities"] == {}
+
+
+@pytest.mark.parametrize("database_ok,mcp_ok", [(True, False), (False, True), (False, False), (True, True)])
+def test_combined_readiness_requires_both_checks(monkeypatch, capsys, settings, database_ok, mcp_ok):
+    monkeypatch.setattr(probe, "configuration", lambda *_: settings)
+    monkeypatch.setattr(probe, "check_connection", lambda _: {"ok": database_ok, "message": "Database check."})
+    monkeypatch.setattr(probe, "check_mcp_boundary", lambda _: {"ok": mcp_ok, "message": "MCP check."})
+    assert probe.main(["--json", "--mcp-url", "http://localhost:5173/mcp"]) == (0 if database_ok and mcp_ok else 1)
+    result = json.loads(capsys.readouterr().out)
+    assert result["database"]["ok"] is database_ok
+    assert result["mcp"]["ok"] is mcp_ok
