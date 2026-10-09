@@ -48,7 +48,7 @@
         "TokenValidityUnits": {"AccessToken": "minutes", "IdToken": "minutes", "RefreshToken": "days"},
         "EnableTokenRevocation": true,
         "PreventUserExistenceErrors": "ENABLED",
-        "ExplicitAuthFlows": ["ALLOW_REFRESH_TOKEN_AUTH"]
+        "ExplicitAuthFlows": ["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]
       }
     },
     "LoginDomain": {
