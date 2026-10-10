@@ -17,6 +17,10 @@ if TYPE_CHECKING:
     from saarthi_mcp.household import HouseholdDefinition
 
 from saarthi_mcp.memory_query import answer_question, rank_events
+from saarthi_mcp.directory import (
+    DirectoryConflict, canonical_directory, change_audit, directory_revision,
+    ensure_label_available, preview_change, validate_change,
+)
 from saarthi_mcp.models import (
     Appointment,
     DoseLog,
@@ -80,6 +84,8 @@ def calendar_appointment_detail(appt: Appointment) -> str:
 
 @runtime_checkable
 class HouseholdRepository(Protocol):
+    def household_directory(self) -> dict: ...
+    def apply_household_change(self, change: dict, expected_revision: str, *, actor: str | None = None) -> dict: ...
     def import_household(self, definition: HouseholdDefinition) -> None: ...
     def resolve_person(self, person: str) -> Person: ...
     def primary_elder(self) -> Person: ...
@@ -120,6 +126,7 @@ class InMemoryRepository:
         self._primary_elder_id: str | None = None
         self._appt_seq = 0
         self._calendar_lock = RLock()
+        self._directory_audits: list[dict] = []
 
     # -- registration helpers -------------------------------------------------
 
@@ -158,6 +165,57 @@ class InMemoryRepository:
             self._primary_elder_id = person.id
 
     # -- reads ----------------------------------------------------------------
+
+    def household_directory(self) -> dict:
+        with self._calendar_lock:
+            return canonical_directory({
+                "primary_person_id": self._primary_elder_id,
+                "people": [{"id": p.id, "name": p.name, "role": p.role.value} for p in self._people.values()],
+                "relationships": [{"from_person": a, "to_person": b, "relation": relation}
+                                  for a, b, relation in set(self._relationships)],
+            })
+
+    def apply_household_change(self, change: dict, expected_revision: str, *, actor: str | None = None) -> dict:
+        change = validate_change(change)
+        with self._calendar_lock:
+            before = self.household_directory()
+            if directory_revision(before) != expected_revision:
+                raise DirectoryConflict("Household details changed. Reload them and review your change again.")
+            after = preview_change(before, change)
+            kind = change["kind"]
+            if kind in {"add_person", "rename_person"}:
+                target = change.get("id", change.get("person_id"))
+                ensure_label_available([(label, owner) for label, owners in self._aliases.items() for owner in owners],
+                                       [change["name"], target], target)
+            ids, detail = change_audit(before, after, change)
+            # Validate audit objects before changing the store, so failures cannot partly apply.
+            at = now_utc()
+            audits = [Event(type="household_setup", detail=detail, at=at) for _ in ids]
+            if kind == "add_person":
+                self.add_person(Person(id=change["id"], name=change["name"], role=Role(change["role"])))
+            elif kind == "rename_person":
+                target = change["person_id"]
+                old = self._people[target]
+                aliases = [label for label, owners in self._aliases.items()
+                           if target in owners and label not in {old.name.strip().lower(), old.id.lower()}]
+                self.add_person(old.model_copy(update={"name": change["name"]}), aliases=aliases)
+            elif kind == "set_relationship":
+                source = self._people[change["from_person"]]
+                if source.role is Role.family and change["to_person"] == after["primary_person_id"]:
+                    self._people[source.id] = source.model_copy(update={"relation": change["relation"]})
+            self._primary_elder_id = after["primary_person_id"]
+            self._relationships = [(r["from_person"], r["to_person"], r["relation"]) for r in after["relationships"]]
+            if before["primary_person_id"] != after["primary_person_id"]:
+                # This legacy field describes the relationship to the default elder.
+                relations = {r["from_person"]: r["relation"] for r in after["relationships"]
+                             if r["to_person"] == after["primary_person_id"]}
+                for person in list(self._people.values()):
+                    if person.role is Role.family:
+                        self._people[person.id] = person.model_copy(update={"relation": relations.get(person.id)})
+            for person_id, audit in zip(ids, audits):
+                self._events.setdefault(person_id, []).append(audit)
+                self._directory_audits.append({"person_id": person_id, "actor": actor, **audit.model_dump()})
+            return after
 
     def resolve_person(self, person: str) -> Person:
         key = (person or "").strip().lower()

@@ -83,9 +83,10 @@ def build_server(repo: HouseholdRepository | None = None, orchestrator=None) -> 
         orchestrator = CareOrchestrator(
             model_id=settings.bedrock_model_id, region=settings.aws_region,
         )
+    verifier = HouseholdTokenVerifier(settings.cognito) if settings.cognito else None
     mcp = FastMCP(
         name="Saarthi",
-        auth=HouseholdTokenVerifier(settings.cognito) if settings.cognito else None,
+        auth=verifier,
         instructions=(
             "Saarthi is a care companion with memory for an elderly household. Use these tools to "
             "read and update medications, appointments, events, and family notifications, and to "
@@ -378,6 +379,10 @@ def build_server(repo: HouseholdRepository | None = None, orchestrator=None) -> 
         )
 
 
+    if settings.cognito:
+        from saarthi_mcp.household_management import HouseholdManagement, attach_household_management
+        attach_household_management(mcp, HouseholdManagement(repo, persistent=settings.backend == 'neo4j'),
+                                    verifier, settings.cognito.resource_url)
     return mcp
 
 

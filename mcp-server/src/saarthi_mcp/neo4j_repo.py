@@ -16,6 +16,10 @@ from neo4j.exceptions import ConstraintError
 from neo4j.time import DateTime as Neo4jDateTime
 
 from saarthi_mcp.config import Neo4jSettings
+from saarthi_mcp.directory import (
+    DirectoryConflict, canonical_directory, change_audit, directory_revision,
+    ensure_label_available, preview_change, validate_change,
+)
 from saarthi_mcp.memory_query import INTERNAL_EVENT_TYPES, answer_question, event_search_terms
 from saarthi_mcp.models import (
     Appointment,
@@ -36,6 +40,7 @@ if TYPE_CHECKING:
     from saarthi_mcp.household import HouseholdDefinition
 
 _CONSTRAINTS = (
+    "CREATE CONSTRAINT household_directory_key IF NOT EXISTS FOR (d:HouseholdDirectory) REQUIRE d.key IS UNIQUE",
     "CREATE CONSTRAINT person_id IF NOT EXISTS FOR (p:Person) REQUIRE p.id IS UNIQUE",
     "CREATE CONSTRAINT person_setup_slot IF NOT EXISTS FOR (p:Person) REQUIRE p.setup_slot IS UNIQUE",
     "CREATE CONSTRAINT appointment_id IF NOT EXISTS FOR (a:Appointment) REQUIRE a.id IS UNIQUE",
@@ -113,6 +118,75 @@ class Neo4jRepository:
 
     # -- reads ----------------------------------------------------------------
 
+    @staticmethod
+    def _directory_in_transaction(tx) -> dict:
+        rows = list(tx.run("MATCH (p:Person) RETURN p ORDER BY p.id LIMIT 101"))
+        edges = list(tx.run(
+            "MATCH (a:Person)-[r:RELATED_TO]->(b:Person) "
+            "RETURN DISTINCT a.id AS source, b.id AS target, r.relation AS relation "
+            "ORDER BY source, target, relation LIMIT 501"))
+        elders = [r["p"] for r in rows if r["p"].get("role") == "elder"]
+        elders.sort(key=lambda p: (not bool(p.get("primary", False)), p["id"]))
+        return canonical_directory({
+            "primary_person_id": elders[0]["id"] if elders else None,
+            "people": [{"id": r["p"]["id"], "name": r["p"]["name"], "role": r["p"]["role"]} for r in rows],
+            "relationships": [{"from_person": r["source"], "to_person": r["target"], "relation": r["relation"]}
+                              for r in edges],
+        })
+
+    def household_directory(self) -> dict:
+        with self._driver.session(database=self._db) as session:
+            return session.execute_read(self._directory_in_transaction)
+
+    def apply_household_change(self, change: dict, expected_revision: str, *, actor: str | None = None) -> dict:
+        change = validate_change(change)
+
+        def apply(tx):
+            # A property-dependent write acquires an exclusive lock before the snapshot is read.
+            tx.run("MERGE (d:HouseholdDirectory {key:'household'}) "
+                   "SET d.version = coalesce(d.version, 0) + 1").consume()
+            before = self._directory_in_transaction(tx)
+            if directory_revision(before) != expected_revision:
+                raise DirectoryConflict("Household details changed. Reload them and review your change again.")
+            after = preview_change(before, change)
+            kind = change["kind"]
+            if kind in {"add_person", "rename_person"}:
+                rows = tx.run("MATCH (p:Person) RETURN p.id AS id, p.name AS name, p.aliases AS aliases LIMIT 101")
+                labels = [(label, r["id"]) for r in rows for label in [r["id"], r["name"], *(r["aliases"] or [])]]
+                target = change.get("id", change.get("person_id"))
+                ensure_label_available(labels, [change["name"], target], target)
+            ids, detail = change_audit(before, after, change)
+            if kind == "add_person":
+                tx.run("CREATE (:Person {id:$id, name:$name, role:$role, aliases:[]})",
+                       id=change["id"], name=change["name"], role=change["role"]).consume()
+            elif kind == "rename_person":
+                tx.run("MATCH (p:Person {id:$id}) SET p.name=$name",
+                       id=change["person_id"], name=change["name"]).consume()
+            elif kind == "set_relationship":
+                tx.run("MATCH (a:Person {id:$source}), (b:Person {id:$target}) "
+                       "MERGE (a)-[r:RELATED_TO]->(b) SET r.relation=$relation",
+                       source=change["from_person"], target=change["to_person"], relation=change["relation"]).consume()
+                if change["to_person"] == after["primary_person_id"]:
+                    tx.run("MATCH (p:Person {id:$source, role:'family'}) SET p.relation=$relation",
+                           source=change["from_person"], relation=change["relation"]).consume()
+            if after["primary_person_id"] is not None:
+                tx.run("MATCH (p:Person) SET p.primary = (p.id = $primary)", primary=after["primary_person_id"]).consume()
+            if before["primary_person_id"] != after["primary_person_id"]:
+                # Keep the legacy default-elder relationship consistent with the graph.
+                relations = {r["from_person"]: r["relation"] for r in after["relationships"]
+                             if r["to_person"] == after["primary_person_id"]}
+                updates = [{"id": p["id"], "relation": relations.get(p["id"])}
+                           for p in after["people"] if p["role"] == "family"]
+                tx.run("UNWIND $updates AS update MATCH (p:Person {id:update.id}) "
+                       "SET p.relation=update.relation", updates=updates).consume()
+            tx.run("UNWIND $ids AS id MATCH (p:Person {id:id}) "
+                   "CREATE (p)-[:EXPERIENCED]->(:Event {type:'household_setup', detail:$detail, actor:$actor, at:$at})",
+                   ids=ids, detail=detail, actor=actor, at=now_utc()).consume()
+            return after
+
+        with self._driver.session(database=self._db) as session:
+            return session.execute_write(apply)
+
     def resolve_person(self, person: str) -> Person:
         key = (person or "").strip().lower()
         if not key:
@@ -140,7 +214,7 @@ class Neo4jRepository:
 
     def primary_elder(self) -> Person:
         recs = self._read(
-            "MATCH (p:Person {role:'elder'}) RETURN p ORDER BY coalesce(p.primary,false) DESC LIMIT 1"
+            "MATCH (p:Person {role:'elder'}) RETURN p ORDER BY coalesce(p.primary,false) DESC, p.id LIMIT 1"
         )
         if not recs:
             raise PersonNotFoundError("No elder registered in the household.")

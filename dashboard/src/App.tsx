@@ -4,6 +4,8 @@ import { createDashboardStore } from './store';
 import { MemoryMap } from './Graph';
 import { Calendar } from './Calendar';
 import { HouseholdSetup } from './HouseholdSetup';
+import { HouseholdManager } from './HouseholdManager';
+import type { HouseholdManagementClient } from './householdManagementClient';
 
 export function formatDate(value: string) {
   const date = new Date(value);
@@ -11,7 +13,7 @@ export function formatDate(value: string) {
 }
 const isInternal = (event: SavedEvent) => ['agent_action', 'household_setup'].includes(event.type);
 
-export function App({ client, localTools = true }: { client: DashboardClient; localTools?: boolean }) {
+export function App({ client, localTools = true, householdManagement }: { client: DashboardClient; localTools?: boolean; householdManagement?: HouseholdManagementClient }) {
   const store = useMemo(() => createDashboardStore(client), [client]);
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
   const [person, setPerson] = useState('');
@@ -38,10 +40,10 @@ export function App({ client, localTools = true }: { client: DashboardClient; lo
       <header className="topbar"><span>Family space <span className="separator">/</span> Notebook</span><span className={`connection-badge ${view ? 'connected' : ''}`}><span className="status-dot" />{state.phase === 'loading' ? 'Opening notebook' : view ? 'Records loaded' : 'Not connected'}</span></header>
       <main id="main" tabIndex={-1}>
         <div className="page-heading"><div><p className="eyebrow">THE LITTLE THINGS MATTER</p><h1>{view ? `${view.person.name}'s notebook` : 'A place to stay connected.'}</h1><p className="subtitle">{view ? 'The routines, plans and moments your family has saved.' : 'Bring the everyday details together, one saved moment at a time.'}</p></div>{view && <button className="button secondary" disabled={state.saving || state.phase === 'loading'} onClick={() => void store.load(view.person.id)}>Refresh records <span aria-hidden="true">↻</span></button>}</div>
-        <form className="connect-panel" onSubmit={connect}><div><label htmlFor="person">Open a person's notebook</label><p>Use a name or ID already saved in your household.</p></div><div className="connect-controls"><input id="person" autoComplete="off" value={person} onChange={e => setPerson(e.target.value)} placeholder="Saved name or person ID" required maxLength={200} disabled={state.saving} /><button className="button primary" disabled={state.phase === 'loading' || state.saving}>Open notebook <span aria-hidden="true">→</span></button></div></form>
+        {householdManagement ? <HouseholdManager client={householdManagement} disabled={state.saving || state.phase === 'loading'} onOpen={personId => { setPerson(personId); setDetail(''); setQuestion(''); void store.load(personId); }} onChanged={() => { if (view) void store.load(view.person.id); }} /> : <form className="connect-panel" onSubmit={connect}><div><label htmlFor="person">Open a person's notebook</label><p>Use a name or ID already saved in your household.</p></div><div className="connect-controls"><input id="person" autoComplete="off" value={person} onChange={e => setPerson(e.target.value)} placeholder="Saved name or person ID" required maxLength={200} disabled={state.saving} /><button className="button primary" disabled={state.phase === 'loading' || state.saving}>Open notebook <span aria-hidden="true">→</span></button></div></form>}
         {state.error && <p className="notice error" role="alert">{state.error}</p>}
         {state.phase === 'loading' && <div className="loading-state" role="status"><span className="loading-ring" />Loading saved records…</div>}
-        {!view && state.phase !== 'loading' && <section className="welcome-panel"><div className="notebook-illustration" aria-hidden="true"><span /><span /><span /></div><p className="eyebrow">START WITH YOUR FAMILY</p><h2>Your notebook is waiting.</h2><p>Open a saved person's records to see their connections, routines and timeline.</p><p className="muted">{localTools ? 'Use household setup below to check for saved records or start your household.' : 'Use the saved household name or ID provided by your caregiver.'}</p></section>}
+        {!view && state.phase !== 'loading' && <section className="welcome-panel"><div className="notebook-illustration" aria-hidden="true"><span /><span /><span /></div><p className="eyebrow">START WITH YOUR FAMILY</p><h2>Your notebook is waiting.</h2><p>Open a saved person's records to see their connections, routines and timeline.</p><p className="muted">{localTools ? 'Use household setup below to check for saved records or start your household.' : householdManagement ? 'Load saved people above to choose a notebook or update your family details.' : 'Use the saved household name or ID provided by your caregiver.'}</p></section>}
         {view && <>
           <div className="summary-strip"><div><span className="summary-number">{view.medications.length}</span><span>Saved medications</span></div><div><span className="summary-number">{view.appointments.length}</span><span>Upcoming records</span></div><div><span className="summary-number">{view.events.filter(e => !isInternal(e)).length}</span><span>Notes in this view</span></div><p>Showing saved information.<br />Missing records do not tell us how someone is doing.</p></div>
           <div className="main-grid"><section className="card graph-card" id="memory"><div className="section-heading"><div><p className="eyebrow">THE BIGGER PICTURE</p><h2>Saved connections</h2></div><span className="tag">{view.graph.nodes.length} records</span></div><MemoryMap key={view.person.id} graph={view.graph} /><p className="view-note">Loaded {formatDate(view.graph.generated_at)} · Times shown in your device timezone.</p></section>

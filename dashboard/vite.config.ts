@@ -5,6 +5,7 @@ export default defineConfig({
   server: {
     host: '127.0.0.1', port: 5173, strictPort: true,
     proxy: {
+      '/household/manage': { target: 'http://127.0.0.1:8080', changeOrigin: true },
       '/local/household': { target: 'http://127.0.0.1:8080', changeOrigin: true },
       '/mcp': { target: 'http://127.0.0.1:8080', changeOrigin: true },
       '/oauth/google/events': { target: 'http://127.0.0.1:8080', changeOrigin: true },
