@@ -192,6 +192,7 @@ async def test_add_medication_review_confirm_saves_fact_and_rejects_bad_payloads
     assert result['notice'] == CAREGIVER_MEDICATION_NOTICE
     assert result['medication'] == {
         'person_id': elder_id, 'name': 'OwnerSuppliedMed', 'dose': '5mg', 'schedule': ['08:00', '20:00'],
+        'supply_count': None,
     }
     assert result['directory']['revision'] == directory['revision']
     meds = repo.medications_for(elder_id)
