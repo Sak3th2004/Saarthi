@@ -81,6 +81,7 @@ def test_ses_failure_is_honest(ses_service):
 
 
 async def test_mcp_review_and_confirm_tools(household_repo, monkeypatch):
+    monkeypatch.setenv("SAARTHI_AGENTS", "off")
     monkeypatch.setenv("SES_SENDER_EMAIL", "verified@example.test")
     monkeypatch.setenv("AWS_REGION", "us-east-1")
 
@@ -103,6 +104,32 @@ async def test_mcp_review_and_confirm_tools(household_repo, monkeypatch):
         assert confirm.data["delivery_status"] == "accepted"
 
 
+async def test_mcp_weekly_digest_tool(household_repo, monkeypatch):
+    monkeypatch.setenv("SES_SENDER_EMAIL", "verified@example.test")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("SAARTHI_AGENTS", "off")
+    subjects: list[str] = []
+
+    def fake_send(self, *, to_addresses, subject, body_text):
+        subjects.append(subject)
+        assert "not medical advice" in body_text.lower() or "household notebook" in body_text.lower()
+        return "ses-digest-1"
+
+    monkeypatch.setattr("saarthi_mcp.ses_delivery.SesMailer.send", fake_send)
+
+    async with Client(build_server(household_repo)) as mcp:
+        review = await mcp.call_tool("review_weekly_digest", {"person": "Ravi", "days": 7})
+        assert review.data["kind"] == "digest"
+        assert review.data["delivery_status"] == "pending"
+        assert "weekly household digest" in review.data["message"]
+        confirm = await mcp.call_tool(
+            "confirm_family_notification",
+            {"review_token": review.data["review_token"], "confirmed": True},
+        )
+        assert confirm.data["delivery_status"] == "accepted"
+    assert subjects == ["Saarthi weekly digest · Ravi"]
+
+
 async def test_record_only_never_sends_even_when_sample_has_relationship(monkeypatch):
     from saarthi_mcp.repository import seeded_repository
 
@@ -119,7 +146,8 @@ async def test_record_only_never_sends_even_when_sample_has_relationship(monkeyp
     assert res.data["delivered_to"] == []
 
 
-async def test_review_without_recipients_raises(household_repo):
+async def test_review_without_recipients_raises(household_repo, monkeypatch):
+    monkeypatch.setenv("SAARTHI_AGENTS", "off")
     repo = InMemoryRepository()
     repo.add_person(Person(id="solo", name="Solo", role=Role.elder))
     async with Client(build_server(repo)) as mcp:

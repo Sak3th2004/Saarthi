@@ -22,6 +22,7 @@ ALL_TOOLS = {
     "notify_family",
     "review_family_notification",
     "confirm_family_notification",
+    "review_weekly_digest",
     "record_event",
     "query_memory",
     "check_in",

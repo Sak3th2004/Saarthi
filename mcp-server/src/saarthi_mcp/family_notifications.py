@@ -11,6 +11,7 @@ from saarthi_mcp.family_recipients import candidate_channels, recipient_emails, 
 from saarthi_mcp.models import NotifyResult, Person, Urgency
 from saarthi_mcp.repository import HouseholdRepository, now_utc
 from saarthi_mcp.ses_delivery import SesDeliveryError, SesDeliveryUncertain, SesMailer, SesSettings
+from saarthi_mcp.weekly_digest import build_weekly_digest
 
 
 class FamilyNotificationService:
@@ -26,9 +27,11 @@ class FamilyNotificationService:
             raise ValueError("Review the family message again before sending.")
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
-    def review(self, person: str, message: str, urgency: Urgency = Urgency.info, *, actor: str = "local") -> dict:
-        if not isinstance(message, str) or not message.strip() or len(message.strip()) > 4000:
-            raise ValueError("Enter a family message of at most 4000 characters.")
+    def _start_review(
+        self, *, person: str, message: str, urgency: Urgency, actor: str, kind: str, notice: str,
+    ) -> dict:
+        if not isinstance(message, str) or not message.strip() or len(message.strip()) > 8000:
+            raise ValueError("Enter a family message of at most 8000 characters.")
         if not isinstance(person, str) or not person.strip() or not isinstance(actor, str) or not actor:
             raise ValueError("A saved person and signed-in caregiver are required.")
         urgency = Urgency(urgency)
@@ -40,16 +43,30 @@ class FamilyNotificationService:
         token = secrets.token_urlsafe(32)
         operation = {
             "key": self._key(token), "actor": actor, "state": "pending", "expires": time.time() + 600,
-            "person": resolved.model_dump(mode="json"), "message": text, "urgency": urgency.value,
+            "kind": kind, "person": resolved.model_dump(mode="json"), "message": text, "urgency": urgency.value,
             "recipient_emails": emails,
         }
         self.repository.create_notification_review(operation)
         return {
             "review_token": token, "person": {"id": resolved.id, "name": resolved.name},
             "message": text, "urgency": urgency.value, "recipient_emails": emails,
-            "delivery_status": "pending", "expires_in_seconds": 600,
-            "notice": "Confirm to submit this message to the listed family addresses. Provider acceptance does not confirm inbox delivery.",
+            "kind": kind, "delivery_status": "pending", "expires_in_seconds": 600, "notice": notice,
         }
+
+    def review(self, person: str, message: str, urgency: Urgency = Urgency.info, *, actor: str = "local") -> dict:
+        return self._start_review(
+            person=person, message=message, urgency=urgency, actor=actor, kind="message",
+            notice="Confirm to submit this message to the listed family addresses. Provider acceptance does not confirm inbox delivery.",
+        )
+
+    def review_weekly_digest(self, person: str, *, days: int = 7, actor: str = "local") -> dict:
+        """Assemble a digest from saved records, then require the same confirm path as a message."""
+        resolved = self.repository.resolve_person(person)
+        body = build_weekly_digest(self.repository, resolved.id, days=days)
+        return self._start_review(
+            person=resolved.id, message=body, urgency=Urgency.info, actor=actor, kind="digest",
+            notice="Confirm to email this weekly digest of saved household records. It is not medical advice.",
+        )
 
     @staticmethod
     def _result(operation: dict, status: str, speech: str, *, submitted: bool = False) -> NotifyResult:
@@ -78,10 +95,24 @@ class FamilyNotificationService:
             result = self._result(operation, "recorded_only", "The message was recorded. Email is not configured; no email was submitted.")
         else:
             try:
+                kind = operation.get("kind", "message")
+                subject = (
+                    f"Saarthi weekly digest · {operation['person']['name']}"
+                    if kind == "digest"
+                    else f"Saarthi family update ({operation['urgency']})"
+                )
+                body = (
+                    f"{operation['message']}\n\nSent from your Saarthi household notebook."
+                    if kind == "digest"
+                    else (
+                        f"Message about {operation['person']['name']}:\n\n{operation['message']}\n\n"
+                        "Sent from your Saarthi household notebook. This is not medical advice."
+                    )
+                )
                 provider_id = self.mailer.send(
                     to_addresses=operation["recipient_emails"],
-                    subject=f"Saarthi family update ({operation['urgency']})",
-                    body_text=f"Message about {operation['person']['name']}:\n\n{operation['message']}\n\nSent from your Saarthi household notebook. This is not medical advice.",
+                    subject=subject,
+                    body_text=body,
                 )
                 result = self._result(operation, "accepted",
                     "The email provider accepted the family message. Inbox delivery has not been confirmed.", submitted=True)
@@ -158,6 +189,14 @@ def attach_family_notification_routes(server, service, verifier, resource_url):
             raise ValueError("Invalid review request.")
         return service.review(raw["person"], raw["message"], Urgency(raw["urgency"]), actor=actor)
 
+    def digest_payload(raw, actor):
+        if not isinstance(raw, dict) or "person" not in raw or set(raw) - {"person", "days"}:
+            raise ValueError("Invalid digest review request.")
+        days = raw.get("days", 7)
+        if type(days) is not int:
+            raise ValueError("Invalid digest review request.")
+        return service.review_weekly_digest(raw["person"], days=days, actor=actor)
+
     def confirm_payload(raw, actor):
         if not isinstance(raw, dict) or set(raw) != {"review_token", "confirmed"}:
             raise ValueError("Invalid confirm request.")
@@ -166,6 +205,10 @@ def attach_family_notification_routes(server, service, verifier, resource_url):
     @server.custom_route("/household/notify/review", methods=["POST"])
     async def review_route(request):
         return await handle(request, review_payload)
+
+    @server.custom_route("/household/notify/digest/review", methods=["POST"])
+    async def digest_route(request):
+        return await handle(request, digest_payload)
 
     @server.custom_route("/household/notify/confirm", methods=["POST"])
     async def confirm_route(request):

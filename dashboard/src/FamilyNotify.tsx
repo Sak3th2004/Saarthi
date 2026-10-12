@@ -49,6 +49,23 @@ export function FamilyNotify({
     }
   }
 
+  async function prepareDigest() {
+    if (lock.current) return;
+    lock.current = true;
+    setBusy(true);
+    setError('');
+    setReview(null);
+    setStatusLine('');
+    try {
+      setReview(await client.reviewDigest(person.id, 7));
+    } catch (err) {
+      setError(householdNotifyErrorMessage(err));
+    } finally {
+      lock.current = false;
+      setBusy(false);
+    }
+  }
+
   async function confirm() {
     if (!review || lock.current) return;
     lock.current = true;
@@ -70,6 +87,8 @@ export function FamilyNotify({
       setBusy(false);
     }
   }
+
+  const isDigest = review?.kind === 'digest';
 
   return <section className="card" aria-labelledby="family-notify-heading" aria-busy={busy}>
     <p className="eyebrow">KEEP THE FAMILY INFORMED</p>
@@ -103,16 +122,26 @@ export function FamilyNotify({
         <button className="button secondary" type="submit">Review family message</button>
       </fieldset>
     </form>
+    <div className="record-detail">
+      <h3>Weekly digest</h3>
+      <p className="muted">
+        Assemble the last seven days of saved dose logs, appointments, and notes for review.
+        Nothing is emailed until you confirm. This is not medical advice.
+      </p>
+      <button className="button secondary" type="button" disabled={busy} onClick={() => void prepareDigest()}>
+        Review weekly digest
+      </button>
+    </div>
     {review && <div className="record-detail">
-      <h3>Review before sending</h3>
-      <p>{review.person.name} · {review.urgency}</p>
-      <p>{review.message}</p>
+      <h3>{isDigest ? 'Review weekly digest before sending' : 'Review before sending'}</h3>
+      <p>{review.person.name} · {review.urgency}{isDigest ? ' · digest' : ''}</p>
+      <pre className="digest-preview">{review.message}</pre>
       <p>Recipients: {review.recipient_emails.join(', ')}</p>
       <p className="muted">{deliveryStatusLabel(review.delivery_status)}</p>
       <p>{review.notice}</p>
       <p className="muted">This review expires after ten minutes. SMS will not be sent.</p>
       <button className="button primary" type="button" disabled={busy} onClick={() => void confirm()}>
-        {busy ? 'Sending…' : 'Confirm and send email'}
+        {busy ? 'Sending…' : isDigest ? 'Confirm and send weekly digest' : 'Confirm and send email'}
       </button>
     </div>}
     {error && <p className="notice error" role="alert">{error}</p>}

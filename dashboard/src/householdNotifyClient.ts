@@ -8,6 +8,8 @@ export type NotifyPerson = {
   role?: 'elder' | 'family';
 };
 
+export type NotifyKind = 'message' | 'digest';
+
 export type NotifyReview = {
   review_token: string;
   person: NotifyPerson;
@@ -16,6 +18,7 @@ export type NotifyReview = {
   recipient_emails: string[];
   delivery_status: 'pending';
   notice: string;
+  kind?: NotifyKind;
 };
 
 export type NotifyConfirm = {
@@ -83,6 +86,8 @@ export function parseNotifyReview(value: unknown, personId: string, message: str
   const item = object(value);
   if (typeof item.review_token !== 'string' || !item.review_token.trim() || item.review_token.length > 8192) return fail();
   if (item.message !== message || item.urgency !== expectedUrgency || item.delivery_status !== 'pending' || typeof item.notice !== 'string') return fail();
+  const kind = item.kind;
+  if (kind !== undefined && kind !== 'message' && kind !== 'digest') return fail();
   return {
     review_token: item.review_token,
     person: person(item.person, personId),
@@ -91,6 +96,27 @@ export function parseNotifyReview(value: unknown, personId: string, message: str
     recipient_emails: emails(item.recipient_emails),
     delivery_status: 'pending',
     notice: item.notice,
+    ...(kind ? { kind } : {}),
+  };
+}
+
+/** Digest body is server-assembled; verify shape without requiring a caller-known message. */
+export function parseDigestReview(value: unknown, personId: string): NotifyReview {
+  const item = object(value);
+  if (typeof item.review_token !== 'string' || !item.review_token.trim() || item.review_token.length > 8192) return fail();
+  if (typeof item.message !== 'string' || !item.message.trim() || item.message.length > 8000) return fail();
+  if (item.urgency !== 'info' || item.delivery_status !== 'pending' || typeof item.notice !== 'string') return fail();
+  if (item.kind !== undefined && item.kind !== 'digest') return fail();
+  if (!item.message.includes('weekly household digest') || !item.message.includes('not medical advice')) return fail();
+  return {
+    review_token: item.review_token,
+    person: person(item.person, personId),
+    message: item.message,
+    urgency: 'info',
+    recipient_emails: emails(item.recipient_emails),
+    delivery_status: 'pending',
+    notice: item.notice,
+    kind: 'digest',
   };
 }
 
@@ -131,7 +157,7 @@ export function deliveryStatusLabel(status: DeliveryStatus) {
 }
 
 export function createHouseholdNotifyClient(getToken: () => string, fetcher: typeof fetch = fetch) {
-  async function request(action: 'review' | 'confirm', input: unknown): Promise<unknown> {
+  async function request(action: 'review' | 'digest/review' | 'confirm', input: unknown): Promise<unknown> {
     let token: string;
     try { token = getToken(); if (!token) throw new Error(); }
     catch { throw new HouseholdNotifyError('access'); }
@@ -157,6 +183,10 @@ export function createHouseholdNotifyClient(getToken: () => string, fetcher: typ
       const text = message.trim();
       if (!text) throw new HouseholdNotifyError('input');
       return parseNotifyReview(await request('review', { person: personId, message: text, urgency: urgencyValue }), personId, text, urgencyValue);
+    },
+    async reviewDigest(personId: string, days = 7) {
+      if (!Number.isInteger(days) || days < 1 || days > 31) throw new HouseholdNotifyError('input');
+      return parseDigestReview(await request('digest/review', { person: personId, days }), personId);
     },
     async confirm(review: NotifyReview) {
       try {

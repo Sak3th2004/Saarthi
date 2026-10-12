@@ -1,12 +1,23 @@
 """No observations must not become positive health claims."""
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastmcp import Client
 import pytest
 
 from saarthi_mcp.models import DoseStatus, Person, Role
-from saarthi_mcp.repository import InMemoryRepository, now_utc
+from saarthi_mcp.repository import InMemoryRepository
 from saarthi_mcp.server import build_server
+
+# 00:30 UTC = 06:00 Asia/Calcutta — before the 08:00 Watch window.
+FIXED_NOW = datetime(2026, 10, 12, 0, 30, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def freeze_before_watch_window(monkeypatch):
+    """Keep adherence/missing-record assertions independent of local wall clock."""
+    monkeypatch.setenv("SAARTHI_AGENTS", "off")
+    monkeypatch.setattr("saarthi_mcp.server.now_utc", lambda: FIXED_NOW)
+    monkeypatch.setattr("saarthi_mcp.repository.now_utc", lambda: FIXED_NOW)
 
 
 @pytest.fixture
@@ -29,7 +40,7 @@ async def test_empty_summary_and_check_in_do_not_claim_adherence_or_wellbeing(em
 
 
 async def test_recorded_taken_dose_does_not_prove_schedule_coverage(empty_household):
-    empty_household.add_dose("person-x", "Saved medication", DoseStatus.taken, now_utc())
+    empty_household.add_dose("person-x", "Saved medication", DoseStatus.taken, FIXED_NOW)
     async with Client(build_server(empty_household)) as client:
         summary = (await client.call_tool("get_household_summary", {})).data
         assert summary["adherence_7d"] == 1.0
@@ -45,12 +56,12 @@ async def test_recorded_taken_dose_does_not_prove_schedule_coverage(empty_househ
     (DoseStatus.taken, timedelta(days=1)),
 ])
 def test_non_observations_do_not_become_taken_percentage(empty_household, status, offset):
-    empty_household.add_dose("person-x", "Saved medication", status, now_utc() + offset)
+    empty_household.add_dose("person-x", "Saved medication", status, FIXED_NOW + offset)
     assert empty_household.adherence("person-x") is None
 
 
 async def test_missed_record_is_reported_without_medical_action(empty_household):
-    empty_household.add_dose("person-x", "Saved medication", DoseStatus.missed, now_utc())
+    empty_household.add_dose("person-x", "Saved medication", DoseStatus.missed, FIXED_NOW)
     async with Client(build_server(empty_household)) as client:
         check = (await client.call_tool("check_in", {"person": "person-x"})).data
         assert check["ok"] is False
@@ -60,7 +71,7 @@ async def test_missed_record_is_reported_without_medical_action(empty_household)
 
 
 async def test_future_missed_record_is_not_reported_as_today(empty_household):
-    empty_household.add_dose("person-x", "Saved medication", DoseStatus.missed, now_utc() + timedelta(days=1))
+    empty_household.add_dose("person-x", "Saved medication", DoseStatus.missed, FIXED_NOW + timedelta(days=1))
     async with Client(build_server(empty_household)) as client:
         check = (await client.call_tool("check_in", {"person": "person-x"})).data
         assert check["missed_doses_today"] == 0

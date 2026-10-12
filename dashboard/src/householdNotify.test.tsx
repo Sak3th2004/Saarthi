@@ -6,6 +6,7 @@ import {
   createHouseholdNotifyClient,
   deliveryStatusLabel,
   householdNotifyErrorMessage,
+  parseDigestReview,
   parseNotifyConfirm,
   parseNotifyReview,
   type NotifyReview,
@@ -93,6 +94,37 @@ describe('household notify response verification', () => {
     expect(deliveryStatusLabel('recorded_only')).toMatch(/not sent/i);
     expect(deliveryStatusLabel('accepted')).not.toMatch(/SMS/i);
   });
+  it('accepts server-assembled weekly digests without a caller-known message', () => {
+    const digestBody = [
+      'Saarthi weekly household digest for Ravi',
+      'Window: last 7 days (saved records only).',
+      '',
+      'This digest is assembled from household notebook records.',
+      'It is not medical advice and does not confirm how someone is doing.',
+    ].join('\n');
+    const parsed = parseDigestReview({
+      review_token: 'opaque-digest',
+      person: { id: 'elder-1', name: 'Ravi' },
+      message: digestBody,
+      urgency: 'info',
+      recipient_emails: ['caregiver@example.test'],
+      delivery_status: 'pending',
+      notice: 'Confirm to email this weekly digest.',
+      kind: 'digest',
+    }, 'elder-1');
+    expect(parsed.kind).toBe('digest');
+    expect(parsed.message).toContain('weekly household digest');
+    expect(() => parseDigestReview({
+      review_token: 'opaque-digest',
+      person: { id: 'elder-1', name: 'Ravi' },
+      message: 'Not a digest',
+      urgency: 'info',
+      recipient_emails: ['caregiver@example.test'],
+      delivery_status: 'pending',
+      notice: 'Confirm',
+      kind: 'digest',
+    }, 'elder-1')).toThrow();
+  });
 });
 
 describe('household notify transport', () => {
@@ -152,6 +184,28 @@ describe('household notify transport', () => {
     expect(confirmed.delivered_to).toEqual([]);
     expect(confirmed.submitted_to).toEqual(['email:caregiver@example.test']);
   });
+  it('reviews weekly digests through /household/notify/digest/review', async () => {
+    const digestBody = [
+      'Saarthi weekly household digest for Ravi',
+      'It is not medical advice and does not confirm how someone is doing.',
+    ].join('\n');
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({
+      review_token: 'opaque-digest',
+      person: { id: 'elder-1', name: 'Ravi' },
+      message: digestBody,
+      urgency: 'info',
+      recipient_emails: ['caregiver@example.test'],
+      delivery_status: 'pending',
+      notice: 'Confirm to email this weekly digest.',
+      kind: 'digest',
+    }));
+    const pending = await createHouseholdNotifyClient(() => 'session-token', fetcher).reviewDigest('elder-1', 7);
+    expect(fetcher).toHaveBeenCalledWith('/household/notify/digest/review', expect.objectContaining({
+      body: JSON.stringify({ person: 'elder-1', days: 7 }),
+    }));
+    expect(pending.kind).toBe('digest');
+    expect(pending.message).toContain('weekly household digest');
+  });
   it.each([[401, 'Sign out'], [403, 'Sign out'], [400, 'Check the message'], [503, 'family emails']])(
     'maps HTTP %i without exposing provider text',
     async (status, expected) => {
@@ -164,12 +218,13 @@ describe('household notify transport', () => {
 
 describe('family notify presentation', () => {
   it('shows review-first copy and never claims SMS delivery', () => {
-    const client = { review: vi.fn(), confirm: vi.fn() };
+    const client = { review: vi.fn(), reviewDigest: vi.fn(), confirm: vi.fn() };
     const html = renderToStaticMarkup(createElement(FamilyNotify, {
       person: { id: 'elder-1', name: 'Ravi', role: 'elder' },
       client,
     }));
     expect(html).toContain('Review family message');
+    expect(html).toContain('Review weekly digest');
     expect(html).toContain('SMS is not available');
     expect(html).not.toContain('Confirm and send email');
     expect(html).not.toContain('SMS sent');

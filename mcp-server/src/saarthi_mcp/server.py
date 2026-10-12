@@ -7,7 +7,7 @@ and orchestrator; creating another server cannot redirect existing tools to anot
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import wraps
 from inspect import signature
 import json
@@ -47,6 +47,7 @@ from saarthi_mcp.repository import (
     ensure_aware,
     now_utc,
 )
+from saarthi_mcp.watch_policy import WatchPolicy
 
 
 def _default_repo(settings: Settings) -> HouseholdRepository:
@@ -314,6 +315,19 @@ def build_server(repo: HouseholdRepository | None = None, orchestrator=None) -> 
             raise ToolError(str(exc)) from None
         return _result(result)
 
+    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False})
+    def review_weekly_digest(person: str, days: int = 7) -> ToolResult:
+        """Build a weekly digest from saved records for review. Nothing is emailed until confirm."""
+        try:
+            preview = family_notify.review_weekly_digest(person, days=days, actor=notification_actor())
+        except ValueError as exc:
+            raise ToolError(str(exc)) from None
+        speech = (
+            f"Ready to review a weekly digest about {_resolve(person).name} for "
+            f"{len(preview['recipient_emails'])} household address(es). Confirm before sending."
+        )
+        return ToolResult(content=speech, structured_content={**preview, "speech": speech})
+
 
     @mcp.tool
     def record_event(person: str, type: str, detail: str) -> ToolResult:
@@ -372,10 +386,15 @@ def build_server(repo: HouseholdRepository | None = None, orchestrator=None) -> 
     @mcp.tool
     @_orchestrated("check_in")
     def check_in(person: str) -> ToolResult:
-        """Report recorded missed doses and low supply, without inferring wellbeing."""
+        """Report recorded missed doses, low supply, and stale activity — never wellbeing."""
         p = _resolve(person)
+        try:
+            policy = WatchPolicy.from_env()
+        except ValueError as exc:
+            raise ToolError(str(exc)) from None
         current = now_utc()
-        today_start = current.replace(hour=0, minute=0, second=0, microsecond=0)
+        local = policy.local_now(current)
+        today_start = local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
         missed_today = sum(
             1
             for d in repo.dose_logs(p.id, since=today_start)
@@ -386,14 +405,22 @@ def build_server(repo: HouseholdRepository | None = None, orchestrator=None) -> 
 
         concerns: list[str] = []
         if missed_today:
-            concerns.append(f"{missed_today} dose(s) recorded as missed today (UTC)")
+            concerns.append(
+                f"{missed_today} dose(s) recorded as missed today ({policy.timezone})"
+            )
         for m in repo.medications_for(p.id):
-            if m.supply_count is not None and m.supply_count <= 10:
+            if m.supply_count is not None and m.supply_count <= policy.low_supply_threshold:
                 concerns.append(f"low supply of {m.name} ({m.supply_count} left)")
+        if policy.activity_stale(last_activity, instant=current):
+            concerns.append(
+                f"no saved activity since the {policy.window_start} {policy.timezone} window opened "
+                f"(grace {policy.grace_hours}h). Missing records are not proof of an emergency."
+            )
 
         ok = False if concerns else None
         speech = (
-            f"No missed doses or low supply are recorded for {p.name} today (UTC). "
+            f"No missed doses, low supply, or stale activity records for {p.name} "
+            f"under the {policy.timezone} watch window. "
             "Not enough information to confirm how they are doing."
             if not concerns
             else f"Recorded concerns for {p.name}: " + "; ".join(concerns) + ". Please check with the family."
