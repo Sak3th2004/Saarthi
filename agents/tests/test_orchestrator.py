@@ -110,16 +110,17 @@ def test_parallel_duplicate_delegations_and_actions_execute_only_once():
 
 
 @pytest.mark.parametrize("role", ["router", "specialist"])
-def test_model_failure_before_action_records_failure(role):
+def test_model_failure_before_action_falls_back_to_validated_write(role):
     care, _, _ = runtime(**{role: [RuntimeError("secret-provider-message")]})
-    action, record = Mock(), Mock()
-    with pytest.raises(AgentExecutionError) as caught:
-        care.execute("log_dose", {}, action, record)
-    assert caught.value.reason == "model_failed"
-    assert not caught.value.action_attempted
-    assert "secret" not in str(caught.value)
-    action.assert_not_called()
-    assert record.call_args.args[0]["status"] == "failed"
+    saved = {"event_id": "direct-fallback"}
+    action, record = Mock(return_value=saved), Mock()
+    assert care.execute("log_dose", {}, action, record) is saved
+    action.assert_called_once_with()
+    assert "secret" not in str(record.call_args)
+    outcome = record.call_args.args[0]
+    assert outcome["status"] == "completed"
+    assert outcome["reason"] == "model_unavailable_direct_action"
+    assert "direct_fallback" in outcome["stages"]
 
 
 @pytest.mark.parametrize("role, tool_name", [("router", "delegate_request"), ("specialist", "execute_request")])
@@ -146,23 +147,23 @@ def test_uncertain_action_failure_is_not_retried_or_leaked():
     assert record.call_args.args[0]["status"] == "failed"
 
 
-def test_no_tool_execution_is_a_failure_not_a_fabricated_success():
+def test_no_tool_execution_falls_back_to_validated_write():
     care, _, _ = runtime(router=["I logged the dose without using any tool"])
-    action, record = Mock(), Mock()
-    with pytest.raises(AgentExecutionError, match="action_not_executed"):
-        care.execute("log_dose", {}, action, record)
-    action.assert_not_called()
-    record.assert_called_once()
+    saved = {"event_id": "bound-by-mcp"}
+    action, record = Mock(return_value=saved), Mock()
+    assert care.execute("log_dose", {}, action, record) is saved
+    action.assert_called_once_with()
+    assert record.call_args.args[0]["reason"] == "model_unavailable_direct_action"
 
 
-def test_repeated_model_loop_has_a_hard_call_budget():
+def test_repeated_model_loop_falls_back_after_call_budget():
     care, models, _ = runtime(router=[[("unknown_tool", {})]] * 10)
-    action, record = Mock(), Mock()
-    with pytest.raises(AgentExecutionError):
-        care.execute("log_dose", {}, action, record)
+    saved = {"event_id": "after-budget"}
+    action, record = Mock(return_value=saved), Mock()
+    assert care.execute("log_dose", {}, action, record) is saved
     assert len(models["Orchestrator"].requests) == 3
-    action.assert_not_called()
-    record.assert_called_once()
+    action.assert_called_once_with()
+    assert record.call_args.args[0]["reason"] == "model_unavailable_direct_action"
 
 
 def test_audit_failure_preserves_completed_result_and_retry_information():

@@ -29,7 +29,9 @@ ALL_TOOLS = {
 
 
 @pytest.fixture
-def server():
+def server(monkeypatch):
+    # Unit tests must not call live Bedrock (throttle / spend). Force direct tools.
+    monkeypatch.setenv("SAARTHI_AGENTS", "off")
     # Fresh seeded repository per test so writes don't leak across tests.
     return build_server(seeded_repository())
 
@@ -184,11 +186,12 @@ async def test_notify_family_records_contacts(client):
 
 
 @pytest.mark.parametrize("has_contact", [False, True])
-async def test_record_only_actions_save_history_without_claiming_external_success(has_contact):
+async def test_record_only_actions_save_history_without_claiming_external_success(has_contact, monkeypatch):
     from saarthi_mcp.directory import directory_revision
     from saarthi_mcp.models import Person, Role
     from saarthi_mcp.repository import InMemoryRepository
 
+    monkeypatch.setenv("SAARTHI_AGENTS", "off")
     repo = InMemoryRepository()
     repo.add_person(Person(id="new-elder", name="New Person", role=Role.elder))
     repo.add_person(Person(id="unrelated-family", name="Unrelated Caregiver", role=Role.family,

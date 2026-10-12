@@ -297,6 +297,21 @@ class CareOrchestrator:
             else:
                 reason = "model_failed" if model_failed else "action_not_executed"
 
+            # Bedrock throttle / model outage must not block already-validated care writes.
+            # Arguments were bound by the MCP layer; run the action once without inventing facts.
+            if completed is None and not attempted and not action_failed and specialist_name is not None:
+                stages.append("direct_fallback")
+                try:
+                    result = action()
+                    if isinstance(result, dict):
+                        completed = result
+                        attempted = True
+                        reason = "model_unavailable_direct_action"
+                except Exception:
+                    action_failed = True
+                    attempted = True
+                    reason = "action_failed_outcome_uncertain"
+
         status = "completed" if completed is not None else "failed"
         evidence = _audit_evidence(operation, completed)
         outcome = {
