@@ -1,89 +1,113 @@
-# Saarthi — a care companion with memory for Alexa+
+# Saarthi — care companion with memory
 
-> Saarthi turns Alexa+ from a stateless Q&A box into a **care companion with memory** — an
-> agentic system that helps an aging parent live independently by remembering meds,
-> appointments, people, and daily patterns *across sessions*, coordinating a set of
-> autonomous agents, and keeping the family in the loop.
+Saarthi turns a household care notebook into a **companion with cross-session memory**: medications, appointments, people, and daily patterns — coordinated by agents and visible to family.
 
-**Hackathon:** Amazon "Build, Ship, Shape" — Alexa+ track + AWS Builder + Open Source minis.
-See [`AGENTS.md`](./AGENTS.md) for the full spec, [`SPRINT_PLAN.md`](./SPRINT_PLAN.md) for the
-schedule, and [`FRICTION_LOG.md`](./FRICTION_LOG.md) for the build friction log.
+**Hackathon:** Amazon Build, Ship, Shape — Alexa+ (self-hosted MCP) + AWS Builder + Open Source.  
+**Demo path:** caregiver family notebook (Cognito) + live MCP tools. Alexa+ Preview is optional; judges see the same MCP server via Inspector or the notebook.
+
+Spec: [`AGENTS.md`](./AGENTS.md) · Friction log: [`FRICTION_LOG.md`](./FRICTION_LOG.md)
 
 ---
 
-## Architecture (one glance)
+## What works today
 
-```
-Alexa+  ──MCP (Streamable HTTP, spec 2025-11-25+)──▶  Saarthi MCP Server (FastMCP)
-                                                          │
-                                                          ▼
-                                            Orchestrator Agent (Strands, Bedrock)
-                                     ┌──────┬──────┬───────┬──────┬──────────┐
-                                  MedGuardian Appt FamilyLoop Watch Essentials
-                                     └──────┴──────┴───────┴──────┴──────────┘
-                                                          ▼
-                              MEMORY:  Neo4j (household graph) + AgentCore Memory (episodic)
-                                                          ▲
-                                          Family Dashboard (React) — renders the graph live
-```
-
----
-
-## Repo layout
-
-| Path | What lives here |
+| Surface | Capability |
 |---|---|
-| [`/mcp-server`](./mcp-server) | Self-hosted MCP server (FastMCP, Streamable HTTP) + the tool contract (§5) |
-| [`/memory`](./memory) | Neo4j client, graph schema, read/write layer (the differentiator) |
-| [`/agents`](./agents) | Strands orchestrator + sub-agents (Bedrock/Claude) |
-| [`/dashboard`](./dashboard) | React family dashboard (live graph, adherence charts, action feed) |
-| [`/infra`](./infra) | IaC — AgentCore, Cognito, SNS/SES, hosting |
-| [`/docs`](./docs) | Architecture diagram, demo script, submission answers |
+| **MCP server** | Streamable HTTP, spec 2025-11-25+ — meds, doses, appointments, memory query, check-in, family notify |
+| **Memory** | Neo4j Aura household graph (or in-memory for local smoke tests) |
+| **Family notebook** | React dashboard — live memory graph, adherence, timeline, Cognito sign-in |
+| **Calendar** | Google Calendar connect/load/write after Cognito (explicit caregiver action) |
+| **Family email** | SES review → confirm for messages and **weekly digests** (no auto-send) |
+| **Watch** | `check_in` flags missed doses, low supply (≤10), and stale activity after a local grace window (`Asia/Calcutta` 08:00–21:00, 2h grace by default) |
+| **Agents** | Strands orchestrator → MedGuardian / Appointments / FamilyLoop / Watch on Bedrock (opt-in) |
+
+**Not a medical device.** Tracks saved records and escalates to people; never diagnoses, doses, or invents wellbeing from silence.
 
 ---
 
-## Quick start (MCP server — Week 1)
+## Quick start (judges)
 
-Requires **Python 3.11+**.
+Requires **Python 3.11+**, Node 20+, and (for the live demo) AWS Cognito + Neo4j + optional SES/Bedrock credentials in `mcp-server/.env` (see [`.env.example`](./.env.example)).
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install -c constraints.txt -e ./agents -e "./mcp-server[dev,agents]"
+cd dashboard && npm ci && cd ..
+```
+
+**MCP server**
 
 ```bash
 cd mcp-server
-python -m venv .venv
-# Windows (Git Bash):
-source .venv/Scripts/activate
-# macOS/Linux:
-# source .venv/bin/activate
-pip install -e ".[dev]"
-
-# Run the server over Streamable HTTP:
-python -m saarthi_mcp            # serves at http://127.0.0.1:8080/mcp
-
-# Run the tests:
-pytest
+python -m saarthi_mcp          # http://127.0.0.1:8080/mcp
+pytest -q
 ```
 
-### Poke it with the MCP Inspector
+**Inspector:** `npx @modelcontextprotocol/inspector` → Streamable HTTP → `http://127.0.0.1:8080/mcp`
+
+**Dashboard** (use `http://localhost:5173`, not `127.0.0.1`, for Cognito)
 
 ```bash
-npx @modelcontextprotocol/inspector
-# In the Inspector UI:
-#   Transport: Streamable HTTP
-#   URL:       http://127.0.0.1:8080/mcp
-# Then call get_household_summary, log_dose, query_memory, ...
+cd dashboard
+npm run dev
 ```
 
-The server currently runs on an **in-memory stub backend** (`SAARTHI_BACKEND=memory`) seeded
-with sample household data so every tool in [`AGENTS.md §5`](./AGENTS.md) is callable today.
-Week 2 swaps the backend for the Neo4j graph without changing the tool contract.
+Vite proxies `/household/*` and `/mcp` to the server on port 8080.
+
+**Offline tests (no Bedrock spend)**
+
+```powershell
+$env:SAARTHI_AGENTS = 'off'
+.\mcp-server\.venv\Scripts\python.exe -m pytest -c mcp-server/pyproject.toml mcp-server/tests agents/tests -q
+cd dashboard; npm test -- --run
+```
 
 ---
 
-## Safety & guardrails
+## Architecture
 
-Saarthi is **not a medical device**. It tracks adherence and coordinates people; it does not
-diagnose, dose, or give medical advice. Health questions surface saved facts + "talk to your
-doctor." Anomalies escalate to a human. Purchasing requires explicit confirmation. See
-[`AGENTS.md §11`](./AGENTS.md).
+```
+Caregiver notebook / MCP Inspector / Alexa+
+        │  MCP · Streamable HTTP
+        ▼
+Saarthi MCP Server (FastMCP) ──▶ Orchestrator (Strands, Bedrock)
+                                      ├ MedGuardian  ├ Appointments
+                                      ├ FamilyLoop   └ Watch
+                                      ▼
+                         Neo4j household graph (+ optional AgentCore Memory)
+                                      ▲
+                         Family Dashboard (React · Cognito)
+```
+
+| Path | Role |
+|---|---|
+| [`/mcp-server`](./mcp-server) | FastMCP tools + Cognito household routes |
+| [`/agents`](./agents) | Strands orchestrator + specialists |
+| [`/memory`](./memory) | Neo4j schema and persistence notes |
+| [`/dashboard`](./dashboard) | Family notebook UI |
+| [`/infra`](./infra) | Cognito, hosting scaffolding (Amplify / App Runner) |
+
+---
+
+## Bedrock agents (optional)
+
+```powershell
+$env:SAARTHI_AGENTS = 'bedrock'
+$env:AWS_REGION = 'us-east-1'
+$env:BEDROCK_MODEL_ID = 'us.amazon.nova-pro-v1:0'   # strongest available on this account
+.\mcp-server\.venv\Scripts\python.exe -m saarthi_mcp
+```
+
+`SAARTHI_AGENTS=off` uses direct repository handlers (CI / offline). A failed model call never invents a successful write.
+
+---
+
+## Safety
+
+- No diagnosis, dosing advice, or autonomous medical action.
+- Anomaly / missed check-in → escalate to family (`notify_family` / reviewed SES).
+- Email and calendar writes require explicit caregiver confirmation.
+- Medication and personal data stay behind Cognito; least privilege for SES/Calendar.
 
 ## License
 
