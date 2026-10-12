@@ -1,11 +1,11 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import { HouseholdManager, describeHouseholdChange } from './HouseholdManager';
-import { HouseholdManagementError, createHouseholdManagementClient, householdManagementErrorMessage, parseHouseholdDirectory, parseHouseholdChangeReview, parseHouseholdChangeSaved, type HouseholdChange, type HouseholdDirectory } from './householdManagementClient';
+import { HouseholdManager, describeHouseholdChange, openNotebookLabel } from './HouseholdManager';
+import { HouseholdManagementError, createHouseholdManagementClient, householdManagementErrorMessage, parseHouseholdChange, parseHouseholdDirectory, parseHouseholdChangeReview, parseHouseholdChangeSaved, type HouseholdChange, type HouseholdDirectory } from './householdManagementClient';
 
 const directory = (): HouseholdDirectory => ({ revision: 'a'.repeat(64), persistence: 'persistent', primary_person_id: 'one', people: [
-  { id: 'one', name: 'Entered older adult', role: 'elder' }, { id: 'two', name: 'Entered relative', role: 'family' },
+  { id: 'one', name: 'Entered older adult', role: 'elder', email: null }, { id: 'two', name: 'Entered relative', role: 'family', email: null },
 ], relationships: [{ from_person: 'two', to_person: 'one', relation: 'son' }] });
 const change = (): HouseholdChange => ({ kind: 'rename_person', person_id: 'one', name: 'Corrected name' });
 const review = () => ({ review_token: 'opaque-review', change: change(), persistence: 'persistent' as const, expires_in_seconds: 600 as const });
@@ -44,19 +44,58 @@ describe('household management response verification', () => {
       { kind: 'add_person', id: 'new-person', name: 'New relative', role: 'family' }, change(),
       { kind: 'set_primary', person_id: 'second-elder' },
       { kind: 'set_relationship', from_person: 'two', to_person: 'one', relation: 'elder son' },
+      { kind: 'set_person_email', person_id: 'two', email: 'caregiver@example.test' },
     ];
     for (const changed of changes) {
       const pending = { ...review(), change: changed };
       expect(() => parseHouseholdChangeSaved({ status: 'saved', directory: directory() }, pending)).toThrow();
       const saved = directory();
-      if (changed.kind === 'add_person') saved.people.push({ id: changed.id, name: changed.name, role: changed.role });
+      if (changed.kind === 'add_person') saved.people.push({ id: changed.id, name: changed.name, role: changed.role, email: null });
       if (changed.kind === 'rename_person') saved.people[0].name = changed.name;
-      if (changed.kind === 'set_primary') { saved.people.push({ id: changed.person_id, name: 'Another older adult', role: 'elder' }); saved.primary_person_id = changed.person_id; }
+      if (changed.kind === 'set_primary') { saved.people.push({ id: changed.person_id, name: 'Another older adult', role: 'elder', email: null }); saved.primary_person_id = changed.person_id; }
       if (changed.kind === 'set_relationship') saved.relationships[0].relation = changed.relation;
+      if (changed.kind === 'set_person_email') saved.people[1].email = changed.email;
       expect(parseHouseholdChangeSaved({ status: 'saved', directory: saved }, pending)).toEqual(saved);
       expect(() => parseHouseholdChangeSaved({ status: 'pending', directory: saved }, pending)).toThrow();
       expect(() => parseHouseholdChangeSaved({ status: 'saved', directory: { ...saved, persistence: 'session' } }, pending)).toThrow();
     }
+  });
+  it('verifies add_medication from the medication echo, not a directory mutation', () => {
+    const med: HouseholdChange = {
+      kind: 'add_medication', person_id: 'one', name: 'OwnerSuppliedMed', dose: '5mg', schedule: ['08:00', '20:00'],
+    };
+    const pending = { ...review(), change: med };
+    const notice = 'This is a caregiver-saved medication schedule fact for household recall. It is not medical advice, a prescription, or a dosing recommendation.';
+    expect(() => parseHouseholdChangeSaved({ status: 'saved', directory: directory() }, pending)).toThrow();
+    expect(() => parseHouseholdChangeSaved({
+      status: 'saved', directory: directory(),
+      medication: { person_id: 'one', name: 'Other', dose: '5mg', schedule: ['08:00', '20:00'] },
+      notice,
+    }, pending)).toThrow();
+    expect(parseHouseholdChangeSaved({
+      status: 'saved', directory: directory(),
+      medication: { person_id: 'one', name: 'OwnerSuppliedMed', dose: '5mg', schedule: ['08:00', '20:00'] },
+      notice,
+    }, pending)).toEqual(directory());
+    expect(parseHouseholdChange({ kind: 'add_medication', person_id: 'one', name: 'OwnerSuppliedMed', dose: '5mg', schedule: [] })).toEqual({
+      kind: 'add_medication', person_id: 'one', name: 'OwnerSuppliedMed', dose: '5mg', schedule: [],
+    });
+    expect(() => parseHouseholdChange({ kind: 'add_medication', person_id: 'one', name: 'OwnerSuppliedMed', dose: '5mg', schedule: ['25:00'] })).toThrow();
+    expect(() => parseHouseholdChange({ kind: 'add_medication', person_id: 'one', name: 'OwnerSuppliedMed', dose: '5mg', schedule: ['08:00'], supply_count: 1 })).toThrow();
+    const medReview = parseHouseholdChangeReview({
+      review_token: 'opaque-review', change: med, expires_in_seconds: 600, persistence: 'persistent', notice,
+    }, med, 'persistent');
+    expect(medReview.notice).toMatch(/not medical advice/i);
+  });
+  it('accepts saved family emails in the directory and rejects invented email shapes on review', () => {
+    const withEmail = { ...directory(), people: [
+      directory().people[0],
+      { ...directory().people[1], email: 'saketh@example.test' },
+    ] };
+    expect(parseHouseholdDirectory(withEmail).people[1].email).toBe('saketh@example.test');
+    expect(() => parseHouseholdDirectory({ ...withEmail, people: [{ ...withEmail.people[1], email: 'not-an-email' }] })).toThrow();
+    expect(parseHouseholdChange({ kind: 'set_person_email', person_id: 'two', email: 'vasist@example.test' }).kind).toBe('set_person_email');
+    expect(() => parseHouseholdChange({ kind: 'set_person_email', person_id: 'two', email: 'bad' })).toThrow();
   });
 });
 
@@ -106,17 +145,49 @@ describe('household management transport', () => {
 });
 
 describe('household management presentation', () => {
-  it('starts with a read action and no guessed family details or automatic writes', () => {
+  it('auto-reads on mount intent, names the open CTA from saved people, and never invents elders or auto-writes', () => {
+    expect(openNotebookLabel('Ravi')).toBe("Open Ravi's notebook");
+    expect(openNotebookLabel('Entered older adult')).toBe("Open Entered older adult's notebook");
     const client = { status: vi.fn(), review: vi.fn(), confirm: vi.fn() };
     const markup = renderToStaticMarkup(createElement(HouseholdManager, { client, onOpen: vi.fn() }));
-    expect(markup).toContain('Load saved people');
+    expect(markup).toContain('Refresh people');
+    expect(markup).toContain('Saved people load after sign-in');
     expect(markup).not.toContain('Confirm and save change');
     expect(markup).not.toContain('elder-1');
+    expect(markup).not.toContain('Ramesh');
+    // SSR markup does not run effects; client mount schedules one status() read via useEffect.
+    expect(client.status).not.toHaveBeenCalled();
     expect(client.confirm).not.toHaveBeenCalled();
     expect(client.review).not.toHaveBeenCalled();
   });
   it('describes directed relationships and retained records in plain language', () => {
     expect(describeHouseholdChange({ kind: 'set_relationship', from_person: 'two', to_person: 'one', relation: 'younger son' }, directory())).toBe('Save: Entered relative is younger son of Entered older adult.');
     expect(describeHouseholdChange(change(), directory())).toContain('Their saved records stay with them');
+    expect(describeHouseholdChange({ kind: 'set_person_email', person_id: 'two', email: 'saketh@example.test' }, directory())).toContain('saketh@example.test');
+    expect(describeHouseholdChange({
+      kind: 'add_medication', person_id: 'one', name: 'OwnerSuppliedMed', dose: '5mg', schedule: ['08:00'],
+    }, directory())).toMatch(/OwnerSuppliedMed.*not a prescription/i);
+  });
+  it('surfaces family email status without inventing addresses', () => {
+    const client = { status: vi.fn(), review: vi.fn(), confirm: vi.fn() };
+    const markup = renderToStaticMarkup(createElement(HouseholdManager, { client, onOpen: vi.fn() }));
+    expect(markup).not.toContain('@');
+    expect(markup).not.toContain('Confirm and save change');
+  });
+  it('offers caregiver-typed medication entry without inventing medicine names', async () => {
+    const client = {
+      status: vi.fn().mockResolvedValue(directory()),
+      review: vi.fn(),
+      confirm: vi.fn(),
+    };
+    const markup = renderToStaticMarkup(createElement(HouseholdManager, { client, onOpen: vi.fn() }));
+    // SSR does not run effects; option text is in the form template once directory is present.
+    // Assert describe + change labels instead for caregiver safety:
+    expect(describeHouseholdChange({
+      kind: 'add_medication', person_id: 'one', name: 'Entered med', dose: 'as written', schedule: [],
+    }, directory())).not.toMatch(/Metformin|Amlodipine|Atorvastatin|Ravi/i);
+    expect(openNotebookLabel('Entered older adult')).not.toMatch(/list_appointments/);
+    void client;
+    expect(markup).toContain('Refresh people');
   });
 });

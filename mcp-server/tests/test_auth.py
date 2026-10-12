@@ -118,14 +118,24 @@ def test_public_binding_without_auth_is_rejected_before_database_access(monkeypa
         load_settings()
 
 
-@pytest.mark.parametrize("local_feature", ["SAARTHI_LOCAL_SETUP", "SAARTHI_GOOGLE_CONFIG"])
-def test_cognito_cannot_expose_local_admin_routes(monkeypatch, identity, local_feature):
+def test_cognito_cannot_expose_local_admin_routes(monkeypatch, identity):
     settings = identity[0]
     for key, value in {"SAARTHI_AUTH": "cognito", "AWS_REGION": settings.region,
                        "COGNITO_USER_POOL_ID": settings.pool_id, "COGNITO_CLIENT_ID": settings.client_id,
                        "COGNITO_RESOURCE_URL": settings.resource_url, "COGNITO_ALLOWED_SUBJECTS": next(iter(settings.allowed_subjects)),
-                       "SAARTHI_LOCAL_SETUP": "0", "SAARTHI_GOOGLE_CONFIG": ""}.items():
+                       "SAARTHI_LOCAL_SETUP": "1", "SAARTHI_GOOGLE_CONFIG": ""}.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setenv(local_feature, "1")
-    with pytest.raises(ValueError, match="local administrator or local Calendar"):
+    with pytest.raises(ValueError, match="local administrator"):
         load_settings()
+
+
+def test_cognito_allows_authenticated_calendar_config(monkeypatch, identity):
+    settings = identity[0]
+    for key, value in {"SAARTHI_AUTH": "cognito", "AWS_REGION": settings.region,
+                       "COGNITO_USER_POOL_ID": settings.pool_id, "COGNITO_CLIENT_ID": settings.client_id,
+                       "COGNITO_RESOURCE_URL": settings.resource_url, "COGNITO_ALLOWED_SUBJECTS": next(iter(settings.allowed_subjects)),
+                       "SAARTHI_LOCAL_SETUP": "0", "SAARTHI_BACKEND": "memory"}.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("SAARTHI_GOOGLE_CONFIG", "/tmp/google-calendar.env")
+    loaded = load_settings()
+    assert loaded.cognito is not None

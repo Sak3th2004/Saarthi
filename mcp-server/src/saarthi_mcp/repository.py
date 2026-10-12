@@ -8,7 +8,9 @@ same interface — the MCP tool contract in ``server.py`` does not change.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from copy import deepcopy
 import re
+import time
 from threading import RLock
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -17,6 +19,7 @@ if TYPE_CHECKING:
     from saarthi_mcp.household import HouseholdDefinition
 
 from saarthi_mcp.memory_query import answer_question, rank_events
+from saarthi_mcp.family_recipients import validate_notification_claim
 from saarthi_mcp.directory import (
     DirectoryConflict, canonical_directory, change_audit, directory_revision,
     ensure_label_available, preview_change, validate_change,
@@ -84,6 +87,9 @@ def calendar_appointment_detail(appt: Appointment) -> str:
 
 @runtime_checkable
 class HouseholdRepository(Protocol):
+    def create_notification_review(self, operation: dict) -> None: ...
+    def claim_notification_review(self, key: str, actor: str) -> tuple[dict, bool]: ...
+    def finish_notification_review(self, key: str, actor: str, result: dict, detail: str) -> dict: ...
     def household_directory(self) -> dict: ...
     def apply_household_change(self, change: dict, expected_revision: str, *, actor: str | None = None) -> dict: ...
     def import_household(self, definition: HouseholdDefinition) -> None: ...
@@ -127,6 +133,37 @@ class InMemoryRepository:
         self._appt_seq = 0
         self._calendar_lock = RLock()
         self._directory_audits: list[dict] = []
+        self._notifications: dict[str, dict] = {}
+
+    def create_notification_review(self, operation: dict) -> None:
+        with self._calendar_lock:
+            if sum(o['state'] == 'pending' and o['expires'] > time.time()
+                   for o in self._notifications.values()) >= 50:
+                raise ValueError('Too many pending reviews. Wait ten minutes before trying again.')
+            if operation['key'] in self._notifications:
+                raise ValueError('This message review already exists.')
+            self._notifications[operation['key']] = deepcopy(operation)
+
+    def claim_notification_review(self, key: str, actor: str) -> tuple[dict, bool]:
+        with self._calendar_lock:
+            operation = self._notifications.get(key)
+            claimed = validate_notification_claim(operation, actor, self.household_directory())
+            if claimed:
+                # Persist before the external request. A crash must never permit a second send.
+                operation['state'] = 'uncertain'
+            return deepcopy(operation), claimed
+
+    def finish_notification_review(self, key: str, actor: str, result: dict, detail: str) -> dict:
+        with self._calendar_lock:
+            operation = self._notifications.get(key)
+            if operation is None or operation['actor'] != actor or operation['state'] == 'pending':
+                raise ValueError('This message operation is unavailable.')
+            if operation.get('result') is not None:
+                return deepcopy(operation['result'])
+            self.add_event(operation['person']['id'], 'notify', detail, now_utc())
+            operation['state'] = result['delivery_status']
+            operation['result'] = deepcopy(result)
+            return deepcopy(result)
 
     # -- registration helpers -------------------------------------------------
 
@@ -170,7 +207,8 @@ class InMemoryRepository:
         with self._calendar_lock:
             return canonical_directory({
                 "primary_person_id": self._primary_elder_id,
-                "people": [{"id": p.id, "name": p.name, "role": p.role.value} for p in self._people.values()],
+                "people": [{"id": p.id, "name": p.name, "role": p.role.value, "email": p.email}
+                           for p in self._people.values()],
                 "relationships": [{"from_person": a, "to_person": b, "relation": relation}
                                   for a, b, relation in set(self._relationships)],
             })
@@ -187,6 +225,12 @@ class InMemoryRepository:
                 target = change.get("id", change.get("person_id"))
                 ensure_label_available([(label, owner) for label, owners in self._aliases.items() for owner in owners],
                                        [change["name"], target], target)
+            if kind == "add_medication":
+                existing = self._meds.get(change["person_id"], [])
+                if any(m.name.strip().casefold() == change["name"].casefold() for m in existing):
+                    raise ValueError("That medication schedule fact is already saved.")
+                if len(existing) >= 100:
+                    raise ValueError("Medication list exceeds the supported size; no records were changed.")
             ids, detail = change_audit(before, after, change)
             # Validate audit objects before changing the store, so failures cannot partly apply.
             at = now_utc()
@@ -199,19 +243,28 @@ class InMemoryRepository:
                 aliases = [label for label, owners in self._aliases.items()
                            if target in owners and label not in {old.name.strip().lower(), old.id.lower()}]
                 self.add_person(old.model_copy(update={"name": change["name"]}), aliases=aliases)
+            elif kind == "set_person_email":
+                target = self._people[change["person_id"]]
+                self._people[target.id] = target.model_copy(update={"email": change["email"]})
             elif kind == "set_relationship":
                 source = self._people[change["from_person"]]
                 if source.role is Role.family and change["to_person"] == after["primary_person_id"]:
                     self._people[source.id] = source.model_copy(update={"relation": change["relation"]})
-            self._primary_elder_id = after["primary_person_id"]
-            self._relationships = [(r["from_person"], r["to_person"], r["relation"]) for r in after["relationships"]]
-            if before["primary_person_id"] != after["primary_person_id"]:
-                # This legacy field describes the relationship to the default elder.
-                relations = {r["from_person"]: r["relation"] for r in after["relationships"]
-                             if r["to_person"] == after["primary_person_id"]}
-                for person in list(self._people.values()):
-                    if person.role is Role.family:
-                        self._people[person.id] = person.model_copy(update={"relation": relations.get(person.id)})
+            elif kind == "add_medication":
+                self.add_medication(
+                    change["person_id"],
+                    Medication(name=change["name"], dose=change["dose"], schedule=list(change["schedule"])),
+                )
+            if kind != "add_medication":
+                self._primary_elder_id = after["primary_person_id"]
+                self._relationships = [(r["from_person"], r["to_person"], r["relation"]) for r in after["relationships"]]
+                if before["primary_person_id"] != after["primary_person_id"]:
+                    # This legacy field describes the relationship to the default elder.
+                    relations = {r["from_person"]: r["relation"] for r in after["relationships"]
+                                 if r["to_person"] == after["primary_person_id"]}
+                    for person in list(self._people.values()):
+                        if person.role is Role.family:
+                            self._people[person.id] = person.model_copy(update={"relation": relations.get(person.id)})
             for person_id, audit in zip(ids, audits):
                 self._events.setdefault(person_id, []).append(audit)
                 self._directory_audits.append({"person_id": person_id, "actor": actor, **audit.model_dump()})
@@ -245,6 +298,16 @@ class InMemoryRepository:
 
     def medications_for(self, person_id: str) -> list[Medication]:
         return list(self._meds.get(person_id, []))
+
+    def add_medication(self, person_id: str, med: Medication) -> None:
+        if person_id not in self._people:
+            raise PersonNotFoundError("Unknown person. Use a saved household member's ID.")
+        bucket = self._meds.setdefault(person_id, [])
+        for index, existing in enumerate(bucket):
+            if existing.name.strip().casefold() == med.name.strip().casefold():
+                bucket[index] = Medication.model_validate(med.model_dump())
+                return
+        bucket.append(Medication.model_validate(med.model_dump()))
 
     def upcoming_appointments(self, person_id: str, limit: int = 5) -> list[Appointment]:
         now = now_utc()

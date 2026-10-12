@@ -14,11 +14,22 @@ function stub() {
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; }
 
 describe('dashboard lifecycle', () => {
-  it('does not expose local administrator or Calendar controls in authenticated mode', () => {
+  it('hides local-only setup until Cognito calendar/notify clients are provided', () => {
     const html = renderToStaticMarkup(createElement(App, { client: stub(), localTools: false }));
     expect(html).not.toContain('Check household status');
     expect(html).not.toContain('Connect calendar on this computer');
+    expect(html).not.toContain('Google Calendar');
+    expect(html).not.toContain('Message the family');
     expect(html).toContain('provided by your caregiver');
+  });
+  it('surfaces Cognito calendar connect without the local oauth link', () => {
+    const calendar = { connect: vi.fn(), events: vi.fn(), reviewAppointment: vi.fn(), confirmAppointment: vi.fn() };
+    const html = renderToStaticMarkup(createElement(App, { client: stub(), localTools: false, householdCalendar: calendar }));
+    expect(html).toContain('Connect Google Calendar');
+    expect(html).toContain('Saarthi sign-in: active');
+    expect(html).not.toContain('Connect calendar (signed in)');
+    expect(html).not.toContain('Connect calendar on this computer');
+    expect(html).not.toContain('Check household status');
   });
   it('starts empty and makes no automatic requests or demo claims', () => {
     const client = stub();

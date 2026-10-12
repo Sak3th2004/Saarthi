@@ -2,14 +2,19 @@
 from datetime import datetime, timedelta, timezone
 from copy import deepcopy
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import httpx
 import pytest
 from fastmcp import FastMCP, Client
 
-from saarthi_mcp.calendar_appointments import CalendarAppointments, attach_appointment_routes, local_time, matching_event
+from saarthi_mcp.calendar_appointments import (
+    CalendarAppointments, attach_appointment_routes,
+    attach_authenticated_appointment_routes, local_time, matching_event,
+)
+from fastmcp.server.auth.providers.jwt import RSAKeyPair
+from saarthi_mcp.auth import CognitoSettings, HouseholdTokenVerifier
 from saarthi_mcp.google_calendar import CalendarConfig, CalendarConnection
 from saarthi_mcp.models import Person, Role
 from saarthi_mcp.repository import InMemoryRepository
@@ -114,6 +119,107 @@ async def test_mcp_review_and_confirmation_use_same_calendar_memory_service(setu
         saved = (await client.call_tool("confirm_calendar_appointment", {"review_token": review["review_token"], "confirmed": True})).data
         assert saved["status"] == "saved"
         assert len(repo.upcoming_appointments(draft["person"])) == 1
+
+
+@pytest.fixture
+def authenticated_calendar(setup, monkeypatch):
+    service, connection, repo, draft = setup
+    owner, other = str(uuid4()), str(uuid4())
+    settings = CognitoSettings("us-east-1", "us-east-1_test", "client123",
+                               "https://notebook.example/mcp", frozenset([owner, other]))
+    key = RSAKeyPair.generate()
+    verifier = HouseholdTokenVerifier(settings)
+    monkeypatch.setattr(verifier, "_get_verification_key", AsyncMock(return_value=key.public_key))
+
+    def token(subject, **claims):
+        return key.create_token(subject=subject, issuer=settings.issuer, audience=settings.resource_url,
+                                scopes=[settings.scope], additional_claims={
+                                    "token_use": "access", "client_id": settings.client_id, **claims,
+                                })
+
+    server = FastMCP("authenticated-calendar", auth=verifier)
+    attach_authenticated_appointment_routes(server, service, verifier, settings.resource_url)
+    return service, connection, repo, draft, server, verifier, owner, other, token
+
+
+async def test_authenticated_review_and_confirm_bind_caller_and_block_legacy_routes(authenticated_calendar):
+    service, connection, repo, draft, server, _, owner, other, token = authenticated_calendar
+    # A legacy singleton fallback must never replace the request's authenticated identity.
+    connection.subject = other
+    base = "/household/calendar/appointments/"
+    transport = httpx.ASGITransport(app=server.http_app(), client=("127.0.0.1", 32100))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080",
+                                 headers={"Origin": "https://notebook.example"}) as client:
+        for path in ("review", "confirm"):
+            assert (await client.post(base + path, json=draft)).status_code == 401
+            assert (await client.post("/oauth/google/appointments/" + path, json=draft)).status_code == 404
+        owner_headers = {"Authorization": "Bearer " + token(owner)}
+        reviewed = await client.post(base + "review", json=draft, headers=owner_headers)
+        assert reviewed.status_code == 200
+        review = reviewed.json()
+        assert service.reviews[review["review_token"]]["subject"] == owner
+        connection.create_confirmed.assert_not_called()
+        confirm = {"review_token": review["review_token"], "confirmed": True}
+        refused = await client.post(base + "confirm", json=confirm,
+                                    headers={"Authorization": "Bearer " + token(other)})
+        assert refused.status_code == 400
+        connection.create_confirmed.assert_not_called()
+        saved = await client.post(base + "confirm", json=confirm, headers=owner_headers)
+        assert saved.status_code == 200
+        assert saved.json()["status"] == "saved"
+        assert connection.create_confirmed.call_args.kwargs == {"subject": owner}
+        assert len(repo.upcoming_appointments(draft["person"])) == 1
+
+
+@pytest.mark.parametrize("issue", ["foreign_subject", "id_token", "bad_signature", "wrong_origin", "cross_site", "oversized"])
+async def test_authenticated_calendar_rejects_bad_auth_or_browser_context(authenticated_calendar, issue):
+    service, connection, _, draft, server, _, owner, _, token = authenticated_calendar
+    bearer = token(owner)
+    if issue == "foreign_subject": bearer = token(str(uuid4()))
+    if issue == "id_token": bearer = token(owner, token_use="id")
+    if issue == "bad_signature": bearer = "invalid-token"
+    if issue == "oversized": bearer = "x" * 16385
+    headers = {"Authorization": "Bearer " + bearer, "Origin": "https://notebook.example"}
+    if issue == "wrong_origin": headers["Origin"] = "https://other.example"
+    if issue == "cross_site": headers["Sec-Fetch-Site"] = "cross-site"
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.http_app()),
+                                 base_url="https://notebook.example") as client:
+        for action in ("review", "confirm"):
+            result = await client.post("/household/calendar/appointments/" + action, json=draft, headers=headers)
+            assert result.status_code == (403 if issue in {"wrong_origin", "cross_site"} else 401)
+    assert service.reviews == {}
+    connection.create_confirmed.assert_not_called()
+
+
+async def test_authenticated_mcp_uses_verified_request_subject_and_rejects_missing_context(authenticated_calendar, monkeypatch):
+    service, connection, _, draft, server, verifier, owner, other, token = authenticated_calendar
+    import saarthi_mcp.calendar_appointments as module
+    active_identity = None
+    monkeypatch.setattr(module, "get_access_token", lambda: active_identity)
+    async with Client(server) as client:
+        denied = await client.call_tool("review_calendar_appointment", draft, raise_on_error=False)
+        assert denied.is_error
+        assert service.reviews == {}
+        active_identity = await verifier.verify_token(token(owner))
+        review = (await client.call_tool("review_calendar_appointment", draft)).data
+        assert service.reviews[review["review_token"]]["subject"] == owner
+        active_identity = await verifier.verify_token(token(other))
+        confirm = {"review_token": review["review_token"], "confirmed": True}
+        assert (await client.call_tool("confirm_calendar_appointment", confirm, raise_on_error=False)).is_error
+        connection.create_confirmed.assert_not_called()
+        active_identity = await verifier.verify_token(token(owner))
+        saved = (await client.call_tool("confirm_calendar_appointment", confirm)).data
+        assert saved["status"] == "saved"
+        assert connection.create_confirmed.call_args.kwargs == {"subject": owner}
+
+
+def test_subject_bound_review_cannot_be_confirmed_without_identity(setup):
+    service, connection, _, draft = setup
+    owner = str(uuid4())
+    review = service.review(draft, subject=owner)
+    with pytest.raises(ValueError, match="different sign-in"):
+        service.confirm({"review_token": review["review_token"], "confirmed": True})
+    connection.create_confirmed.assert_not_called()
 
 
 @pytest.mark.parametrize("scenario", ["insert", "existing", "conflict", "mismatched", "timeout"])

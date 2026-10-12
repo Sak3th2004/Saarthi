@@ -56,6 +56,24 @@ describe('real-record contract', () => {
     expect(view.medications).toEqual([]);
     expect(view.appointments).toEqual([]);
   });
+  it('maps appointment calendar_event_id to list_appointments-style booking status', () => {
+    const g = graph() as MemoryGraph;
+    g.nodes.push({
+      id: 'appt', kind: 'appointment', label: 'Physio',
+      record: { id: 'a1', kind: 'Physio', when: '2026-10-20T10:00:00Z', status: 'scheduled', calendar_event_id: 'gcal-1' },
+    });
+    g.edges.push({ source: 'root', target: 'appt', relation: 'HAS_APPOINTMENT' });
+    const linked = parseView(g).appointments[0];
+    expect(linked.external_booking_status).toBe('calendar_saved');
+    expect(linked.status).toBe('scheduled');
+    const recordOnly = graph() as MemoryGraph;
+    recordOnly.nodes.push({
+      id: 'appt', kind: 'appointment', label: 'Clinic',
+      record: { id: 'a2', kind: 'Clinic', when: '2026-10-21T10:00:00Z', status: 'scheduled', calendar_event_id: null },
+    });
+    recordOnly.edges.push({ source: 'root', target: 'appt', relation: 'HAS_APPOINTMENT' });
+    expect(parseView(recordOnly).appointments[0].external_booking_status).toBe('not_requested');
+  });
   it.each(['mismatched person', 'dangling edge', 'wrong relationship', 'duplicate node', 'no time offset'])('rejects %s', corruption => {
     const g = graph();
     if (corruption === 'mismatched person') g.person_id = 'other-person';

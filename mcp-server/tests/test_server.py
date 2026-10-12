@@ -20,6 +20,8 @@ ALL_TOOLS = {
     "book_appointment",
     "list_appointments",
     "notify_family",
+    "review_family_notification",
+    "confirm_family_notification",
     "record_event",
     "query_memory",
     "check_in",
@@ -176,21 +178,29 @@ async def test_notify_family_records_contacts(client):
     )
     assert res.data["urgency"] == "warning"
     assert res.data["delivered_to"] == []
-    assert res.data["candidate_channels"], "expected at least one saved family channel"
+    assert res.data["candidate_channels"] == []
     assert res.data["delivery_status"] == "recorded_only"
     assert "No SMS or email has been sent" in res.content[0].text
 
 
 @pytest.mark.parametrize("has_contact", [False, True])
 async def test_record_only_actions_save_history_without_claiming_external_success(has_contact):
+    from saarthi_mcp.directory import directory_revision
     from saarthi_mcp.models import Person, Role
     from saarthi_mcp.repository import InMemoryRepository
 
     repo = InMemoryRepository()
     repo.add_person(Person(id="new-elder", name="New Person", role=Role.elder))
+    repo.add_person(Person(id="unrelated-family", name="Unrelated Caregiver", role=Role.family,
+                           email="unrelated@example.test"))
     if has_contact:
         repo.add_person(Person(id="new-family", name="Caregiver", role=Role.family,
                                email="caregiver@example.test"))
+        repo.apply_household_change(
+            {"kind": "set_relationship", "from_person": "new-family", "to_person": "new-elder", "relation": "child"},
+            directory_revision(repo.household_directory()),
+        )
+    initial_events = len(repo.recent_events("new-elder"))
     async with Client(build_server(repo)) as c:
         message = await c.call_tool("notify_family", {
             "person": "new-elder", "message": "Please return the call", "urgency": "urgent",
@@ -208,7 +218,7 @@ async def test_record_only_actions_save_history_without_claiming_external_succes
     assert appt.data["external_booking_status"] == "not_requested"
     assert listed.data["appointments"][0]["id"] == appt.data["appointment"]["id"]
     events = repo.recent_events("new-elder")
-    assert len(events) == 2
+    assert len(events) == initial_events + 2
     assert any(e.type == "notify" and "Please return the call" in e.detail for e in events)
     assert any(e.type == "appointment_recorded" and "Follow-up" in e.detail for e in events)
 

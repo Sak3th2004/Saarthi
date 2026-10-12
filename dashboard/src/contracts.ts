@@ -1,7 +1,16 @@
-export interface Person { id: string; name: string; role: 'elder' | 'family' }
+export interface Person { id: string; name: string; role: 'elder' | 'family'; email?: string | null }
 export interface SavedEvent { type: string; detail: string; at: string }
 export interface Medication { name: string; dose: string; schedule: string[]; supply_count?: number | null }
-export interface Appointment { id: string; kind: string; when: string; status: string }
+export type ExternalBookingStatus = 'not_requested' | 'calendar_saved';
+export interface Appointment {
+  id: string;
+  kind: string;
+  when: string;
+  /** Local schedule status (e.g. scheduled) — not provider confirmation. */
+  status: string;
+  /** Same honesty as list_appointments: calendar-linked vs record-only. */
+  external_booking_status: ExternalBookingStatus;
+}
 export interface GraphNode {
   id: string;
   kind: 'person' | 'medication' | 'appointment' | 'event';

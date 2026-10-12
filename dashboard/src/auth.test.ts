@@ -18,6 +18,8 @@ describe('Cognito sign-in', () => {
     expect(() => authConfig({}, 'https://notebook.example')).toThrow('Sign-in');
     expect(() => authConfig({ VITE_AUTH_MODE: 'cognito' }, 'http://localhost:5173')).toThrow();
     expect(() => authConfig({ ...env, VITE_COGNITO_REDIRECT_URI: 'http://attacker.example/auth/callback' }, 'http://localhost:5173')).toThrow();
+    // Cognito HTTP redirect allows only hostname localhost; 127.0.0.1 is a different origin.
+    expect(() => authConfig(env, 'http://127.0.0.1:5173')).toThrow();
   });
   it('binds the authorization code to a random verifier, state and resource', async () => {
     const saved = storage();

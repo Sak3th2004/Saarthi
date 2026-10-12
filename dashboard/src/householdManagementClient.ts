@@ -10,16 +10,19 @@ export type HouseholdChange =
   | { kind: 'add_person'; id: string; name: string; role: 'elder' | 'family' }
   | { kind: 'rename_person'; person_id: string; name: string }
   | { kind: 'set_relationship'; from_person: string; to_person: string; relation: string }
-  | { kind: 'set_primary'; person_id: string };
+  | { kind: 'set_primary'; person_id: string }
+  | { kind: 'set_person_email'; person_id: string; email: string }
+  | { kind: 'add_medication'; person_id: string; name: string; dose: string; schedule: string[] };
 export interface HouseholdChangeReview {
   review_token: string; change: HouseholdChange; expires_in_seconds: 600; persistence: Persistence;
+  notice?: string;
 }
 const messages = {
   access: 'Your sign-in was not accepted. Sign out and sign in again.',
   conflict: 'The household or review has changed. Refresh the people list and review your change again.',
   unavailable: 'The household service is unavailable. Check household status before trying to save again.',
   response: 'The household response could not be verified. Refresh the people list before making another change.',
-  input: 'Check the names, people and relationship you entered, then review the change again.',
+  input: 'Check the names, people, medication fact and schedule times (HH:MM) you entered, then review again.',
 } as const;
 export class HouseholdManagementError extends Error {
   constructor(readonly code: keyof typeof messages) { super(messages[code]); }
@@ -40,12 +43,39 @@ function label(value: unknown): string {
   if (typeof value !== 'string' || !value.trim() || value !== value.trim() || value.length > 200 || /[\u0000-\u001f\u007f]/.test(value)) return fail();
   return value;
 }
+function emailAddress(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim() || value !== value.trim() || value.length > 200 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value)) return fail();
+  return value;
+}
+function optionalEmail(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  return emailAddress(value);
+}
 function storage(value: unknown): Persistence {
   if (value !== 'persistent' && value !== 'session') return fail();
   return value;
 }
 function exactKeys(value: Record<string, unknown>, keys: string[]) {
   if (Object.keys(value).length !== keys.length || keys.some(key => !Object.hasOwn(value, key))) fail();
+}
+const SCHEDULE_TIME = /^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/;
+function scheduleSlots(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 24) return fail();
+  return value.map(item => {
+    if (typeof item !== 'string' || !item.trim() || item !== item.trim() || !SCHEDULE_TIME.test(item)) return fail();
+    return item;
+  });
+}
+function medicationFact(value: unknown, expected: Extract<HouseholdChange, { kind: 'add_medication' }>) {
+  const item = object(value);
+  exactKeys(item, ['person_id', 'name', 'dose', 'schedule']);
+  const fact = {
+    person_id: id(item.person_id), name: label(item.name), dose: label(item.dose), schedule: scheduleSlots(item.schedule),
+  };
+  if (JSON.stringify(fact) !== JSON.stringify({
+    person_id: expected.person_id, name: expected.name, dose: expected.dose, schedule: expected.schedule,
+  })) return fail();
+  return fact;
 }
 export function parseHouseholdDirectory(value: unknown): HouseholdDirectory {
   const item = object(value);
@@ -54,7 +84,8 @@ export function parseHouseholdDirectory(value: unknown): HouseholdDirectory {
   const people = item.people.map(value => {
     const person = object(value);
     if (person.role !== 'elder' && person.role !== 'family') return fail();
-    return { id: id(person.id), name: label(person.name), role: person.role } as Person;
+    const email = optionalEmail(person.email);
+    return { id: id(person.id), name: label(person.name), role: person.role, email } as Person;
   });
   const ids = new Set(people.map(person => person.id));
   if (ids.size !== people.length) return fail();
@@ -88,6 +119,15 @@ export function parseHouseholdChange(value: unknown): HouseholdChange {
       exactKeys(item, ['kind', 'from_person', 'to_person', 'relation']);
       if (item.from_person === item.to_person) return fail();
       return { kind: item.kind, from_person: id(item.from_person), to_person: id(item.to_person), relation: label(item.relation) };
+    case 'set_person_email':
+      exactKeys(item, ['kind', 'person_id', 'email']);
+      return { kind: item.kind, person_id: id(item.person_id), email: emailAddress(item.email) };
+    case 'add_medication':
+      exactKeys(item, ['kind', 'person_id', 'name', 'dose', 'schedule']);
+      return {
+        kind: item.kind, person_id: id(item.person_id), name: label(item.name), dose: label(item.dose),
+        schedule: scheduleSlots(item.schedule),
+      };
     default: return fail();
   }
 }
@@ -95,14 +135,23 @@ export function parseHouseholdChangeReview(value: unknown, submitted: HouseholdC
   const item = object(value), change = parseHouseholdChange(item.change);
   if (typeof item.review_token !== 'string' || !item.review_token.trim() || item.review_token.length > 8192 || item.expires_in_seconds !== 600 ||
       storage(item.persistence) !== persistence || JSON.stringify(change) !== JSON.stringify(parseHouseholdChange(submitted))) return fail();
-  return { review_token: item.review_token, change, expires_in_seconds: 600, persistence };
+  const notice = typeof item.notice === 'string' && item.notice.trim() ? item.notice : undefined;
+  if (change.kind === 'add_medication' && notice && !/not medical advice/i.test(notice)) return fail();
+  return { review_token: item.review_token, change, expires_in_seconds: 600, persistence, ...(notice ? { notice } : {}) };
 }
 export function parseHouseholdChangeSaved(value: unknown, review: HouseholdChangeReview): HouseholdDirectory {
   const item = object(value), directory = parseHouseholdDirectory(item.directory), change = review.change;
   if (item.status !== 'saved' || directory.persistence !== review.persistence) return fail();
+  if (change.kind === 'add_medication') {
+    medicationFact(item.medication, change);
+    if (typeof item.notice === 'string' && item.notice.trim() && !/not medical advice/i.test(item.notice)) return fail();
+    if (!directory.people.some(person => person.id === change.person_id)) return fail();
+    return directory;
+  }
   const matches = change.kind === 'add_person' ? directory.people.some(person => person.id === change.id && person.name === change.name && person.role === change.role)
     : change.kind === 'rename_person' ? directory.people.some(person => person.id === change.person_id && person.name === change.name)
     : change.kind === 'set_primary' ? directory.primary_person_id === change.person_id
+    : change.kind === 'set_person_email' ? directory.people.some(person => person.id === change.person_id && person.role === 'family' && person.email === change.email)
     : directory.relationships.some(relation => relation.from_person === change.from_person && relation.to_person === change.to_person && relation.relation === change.relation);
   if (!matches) return fail();
   return directory;

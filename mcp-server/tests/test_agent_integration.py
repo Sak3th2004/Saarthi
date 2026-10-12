@@ -39,6 +39,16 @@ async def test_mcp_log_and_recall_delegate_and_write_action_feed():
     assert any(e.type == "dose" for e in events)
 
 
+async def test_notify_and_check_in_delegate_to_familyloop_and_watch():
+    orchestrator = RecordingOrchestrator()
+    async with Client(build_server(seeded_repository(), orchestrator=orchestrator)) as client:
+        await client.call_tool("notify_family", {
+            "person": "dad", "message": "Please call back", "urgency": "info",
+        })
+        await client.call_tool("check_in", {"person": "dad"})
+    assert [op for op, _ in orchestrator.calls] == ["notify_family", "check_in"]
+
+
 async def test_unknown_person_rejected_before_agent_is_invoked():
     orchestrator = RecordingOrchestrator()
     async with Client(build_server(seeded_repository(), orchestrator=orchestrator)) as client:

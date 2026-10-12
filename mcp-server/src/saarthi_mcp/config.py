@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from saarthi_mcp.auth import CognitoSettings
+from saarthi_mcp.ses_delivery import SesSettings
 
 try:  # Load mcp-server/.env if python-dotenv is available (dev convenience; prod uses real env).
     from dotenv import load_dotenv
@@ -47,6 +48,7 @@ class Settings:
     household_file: str | None = None
     local_setup: bool = False
     cognito: CognitoSettings | None = None
+    ses: SesSettings | None = None
 
     @property
     def url(self) -> str:
@@ -71,8 +73,8 @@ def load_settings() -> Settings:
     local_setup = os.getenv("SAARTHI_LOCAL_SETUP", "0")
     if local_setup not in {"0", "1"}:
         raise ValueError("SAARTHI_LOCAL_SETUP must be '0' or '1'.")
-    if auth_mode == "cognito" and (local_setup == "1" or os.getenv("SAARTHI_GOOGLE_CONFIG")):
-        raise ValueError("Cognito mode cannot expose the local administrator or local Calendar routes.")
+    if auth_mode == "cognito" and local_setup == "1":
+        raise ValueError("Cognito mode cannot expose the local administrator routes.")
     if local_setup == "1" and (os.getenv("SAARTHI_HOST", "127.0.0.1") != "127.0.0.1"
                                or os.getenv("SAARTHI_PORT", "8080") != "8080"):
         raise ValueError("Local household setup requires 127.0.0.1:8080.")
@@ -91,6 +93,11 @@ def load_settings() -> Settings:
             password=os.environ["NEO4J_PASSWORD"],
             database=os.getenv("NEO4J_DATABASE", "neo4j"),
         )
+    ses = None
+    try:
+        ses = SesSettings.from_env()
+    except ValueError:
+        raise
     return Settings(
         host=os.getenv("SAARTHI_HOST", "127.0.0.1"),
         port=int(os.getenv("SAARTHI_PORT", "8080")),
@@ -103,4 +110,5 @@ def load_settings() -> Settings:
         household_file=os.getenv("SAARTHI_HOUSEHOLD_FILE") or None,
         local_setup=local_setup == "1",
         cognito=cognito,
+        ses=ses,
     )

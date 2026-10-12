@@ -46,6 +46,19 @@ def test_edit_keeps_sample_records_aliases_and_existing_care_history():
     assert "tamper" not in str(repo.household_directory())
 
 
+def test_set_person_email_updates_family_only_and_shows_in_directory():
+    repo = seeded_repository()
+    apply(repo, {"kind": "set_person_email", "person_id": "fam-1", "email": "saketh@example.test"})
+    directory = repo.household_directory()
+    family = next(p for p in directory["people"] if p["id"] == "fam-1")
+    assert family["email"] == "saketh@example.test"
+    assert repo.resolve_person("fam-1").email == "saketh@example.test"
+    with pytest.raises(ValueError, match="family"):
+        apply(repo, {"kind": "set_person_email", "person_id": "elder-1", "email": "elder@example.test"})
+    with pytest.raises(ValueError):
+        validate_change({"kind": "set_person_email", "person_id": "fam-1", "email": "not-an-email"})
+
+
 @pytest.mark.parametrize("change", [
     {"kind": "add_person", "id": "third", "name": "DAD", "role": "elder"},
     {"kind": "add_person", "id": "arjun", "name": "Third", "role": "elder"},
@@ -73,10 +86,68 @@ def test_invalid_changes_leave_directory_and_audit_untouched(change):
     {"kind": "rename_person", "person_id": "x", "name": True},
     {"kind": "add_person", "id": "x y", "name": "Name", "role": "elder"},
     {"kind": "add_person", "id": "x", "name": "Name", "role": "doctor"},
+    {"kind": "add_medication", "person_id": "x", "name": "Med", "dose": "1mg", "schedule": ["08:00"], "supply_count": 1},
+    {"kind": "add_medication", "person_id": "x", "name": "Med", "dose": "1mg", "schedule": "08:00"},
+    {"kind": "add_medication", "person_id": "x", "name": "Med", "dose": "1mg", "schedule": ["25:00"]},
+    {"kind": "add_medication", "person_id": "x", "name": "Med", "dose": "1mg", "schedule": ["8:00"]},
+    {"kind": "add_medication", "person_id": "x", "name": "", "dose": "1mg", "schedule": []},
+    {"kind": "add_medication", "person_id": "x", "name": "Med", "dose": "1mg",
+     "schedule": [f"{h:02d}:00" for h in range(25)]},
 ])
 def test_change_shape_is_strict(change):
     with pytest.raises(ValueError):
         validate_change(change)
+
+
+def test_add_medication_saves_caregiver_fact_without_changing_directory_revision():
+    repo = InMemoryRepository()
+    apply(repo, {"kind": "add_person", "id": "parent", "name": "Parent", "role": "elder"})
+    assert repo.medications_for("parent") == []
+    before = repo.household_directory()
+    revision = directory_revision(before)
+    change = {
+        "kind": "add_medication",
+        "person_id": "parent",
+        "name": " ExampleMed ",
+        "dose": " 10mg ",
+        "schedule": ["08:00", "20:00"],
+    }
+    assert preview_change(before, change) == before
+    after = apply(repo, change, actor="caregiver-sub")
+    assert after == before
+    assert directory_revision(after) == revision
+    meds = repo.medications_for("parent")
+    assert len(meds) == 1
+    assert meds[0].name == "ExampleMed"
+    assert meds[0].dose == "10mg"
+    assert meds[0].schedule == ["08:00", "20:00"]
+    assert meds[0].supply_count is None
+    med_audits = [json.loads(e.detail) for e in repo.recent_events("parent", 10) if "add_medication" in e.detail]
+    assert len(med_audits) == 1
+    assert med_audits[0]["kind"] == "add_medication"
+    assert med_audits[0]["before"] is None
+    assert med_audits[0]["after"] == {
+        "person_id": "parent", "name": "ExampleMed", "dose": "10mg", "schedule": ["08:00", "20:00"],
+    }
+    assert repo._directory_audits[-1]["actor"] == "caregiver-sub"
+    assert json.loads(repo._directory_audits[-1]["detail"])["kind"] == "add_medication"
+    with pytest.raises(ValueError, match="already saved"):
+        apply(repo, {
+            "kind": "add_medication",
+            "person_id": "parent",
+            "name": "examplemed",
+            "dose": "20mg",
+            "schedule": ["09:00"],
+        })
+    assert len(repo.medications_for("parent")) == 1
+    with pytest.raises(ValueError, match="saved household member"):
+        apply(repo, {
+            "kind": "add_medication",
+            "person_id": "missing",
+            "name": "Other",
+            "dose": "1mg",
+            "schedule": [],
+        })
 
 
 def test_revision_is_stable_under_order_changes_but_protects_concurrent_edits():

@@ -98,3 +98,31 @@ def test_other_platforms_fail_closed_for_existing_file_and_save(tmp_path, monkey
         store.save({"token": "no-plaintext-fallback"})
     assert path.read_bytes() == b"existing-file"
     assert tokens.LocalTokenStore(tmp_path / "missing.bin").load() is None
+
+
+@windows_only
+def test_caregiver_tokens_are_isolated_and_survive_reopening(tmp_path):
+    store = tokens.SubjectTokenStore(tmp_path / "subjects")
+    store.save({"refresh_token": "synthetic-first-caregiver"}, subject="first-caregiver")
+    assert store.load(subject="second-caregiver") is None
+    store.save({"refresh_token": "synthetic-second-caregiver"}, subject="second-caregiver")
+    reopened = tokens.SubjectTokenStore(tmp_path / "subjects")
+    assert reopened.load(subject="first-caregiver") == {"refresh_token": "synthetic-first-caregiver"}
+    assert reopened.load(subject="second-caregiver") == {"refresh_token": "synthetic-second-caregiver"}
+    paths = list((tmp_path / "subjects").iterdir())
+    assert len(paths) == 2
+    for path in paths:
+        assert b"synthetic-" not in path.read_bytes()
+        assert "caregiver" not in path.name
+
+
+def test_subject_store_requires_identity_and_cannot_load_legacy_tokens(tmp_path):
+    (tmp_path / "legacy.tokens").write_bytes(b"legacy-marker")
+    store = tokens.SubjectTokenStore(tmp_path / "subjects")
+    for subject in [None, ""]:
+        with pytest.raises(tokens.TokenStoreError, match="signed-in caregiver"):
+            store.load(subject=subject)
+        with pytest.raises(tokens.TokenStoreError, match="signed-in caregiver"):
+            store.save({"token": "unused"}, subject=subject)
+    assert store.load(subject="first-caregiver") is None
+    assert not (tmp_path / "subjects").exists()

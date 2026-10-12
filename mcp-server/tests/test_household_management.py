@@ -124,6 +124,105 @@ async def test_review_endpoint_cannot_modify_contacts_or_care_records(api):
     assert repo.household_directory()['people'] == []
 
 
+async def test_set_person_email_review_confirm_saves_family_email(api):
+    client, repo, _, _, _ = api
+    elder_id, family_id = str(uuid4()), str(uuid4())
+    directory = (await client.post('/household/manage/status', json={})).json()
+    for change in [
+        {'kind': 'add_person', 'id': elder_id, 'name': 'Parent', 'role': 'elder'},
+        {'kind': 'add_person', 'id': family_id, 'name': 'Saketh', 'role': 'family'},
+    ]:
+        reviewed = (await client.post('/household/manage/review', json={
+            'expected_revision': directory['revision'], 'change': change})).json()
+        directory = (await client.post('/household/manage/confirm', json={
+            'review_token': reviewed['review_token'], 'confirmed': True})).json()['directory']
+    email_change = {'kind': 'set_person_email', 'person_id': family_id, 'email': 'saketh@example.test'}
+    reviewed = await client.post('/household/manage/review', json={
+        'expected_revision': directory['revision'], 'change': email_change})
+    assert reviewed.status_code == 200
+    assert reviewed.json()['change'] == email_change
+    assert repo.resolve_person(family_id).email is None
+    saved = await client.post('/household/manage/confirm', json={
+        'review_token': reviewed.json()['review_token'], 'confirmed': True})
+    assert saved.status_code == 200
+    people = {p['id']: p for p in saved.json()['directory']['people']}
+    assert people[family_id]['email'] == 'saketh@example.test'
+    assert repo.resolve_person(family_id).email == 'saketh@example.test'
+    elder_email = await client.post('/household/manage/review', json={
+        'expected_revision': saved.json()['directory']['revision'],
+        'change': {'kind': 'set_person_email', 'person_id': elder_id, 'email': 'elder@example.test'}})
+    assert elder_email.status_code == 400
+
+
+async def test_add_medication_review_confirm_saves_fact_and_rejects_bad_payloads(api):
+    from saarthi_mcp.directory import CAREGIVER_MEDICATION_NOTICE
+
+    client, repo, _, _, _ = api
+    elder_id = str(uuid4())
+    directory = (await client.post('/household/manage/status', json={})).json()
+    reviewed = (await client.post('/household/manage/review', json={
+        'expected_revision': directory['revision'],
+        'change': {'kind': 'add_person', 'id': elder_id, 'name': 'Parent', 'role': 'elder'},
+    })).json()
+    directory = (await client.post('/household/manage/confirm', json={
+        'review_token': reviewed['review_token'], 'confirmed': True})).json()['directory']
+    assert repo.medications_for(elder_id) == []
+
+    med_change = {
+        'kind': 'add_medication',
+        'person_id': elder_id,
+        'name': 'OwnerSuppliedMed',
+        'dose': '5mg',
+        'schedule': ['08:00', '20:00'],
+    }
+    preview = await client.post('/household/manage/review', json={
+        'expected_revision': directory['revision'], 'change': med_change})
+    assert preview.status_code == 200
+    body = preview.json()
+    assert body['change'] == med_change
+    assert body['notice'] == CAREGIVER_MEDICATION_NOTICE
+    assert 'medical advice' in body['notice'].lower()
+    assert repo.medications_for(elder_id) == []
+
+    saved = await client.post('/household/manage/confirm', json={
+        'review_token': body['review_token'], 'confirmed': True})
+    assert saved.status_code == 200
+    result = saved.json()
+    assert result['status'] == 'saved'
+    assert result['notice'] == CAREGIVER_MEDICATION_NOTICE
+    assert result['medication'] == {
+        'person_id': elder_id, 'name': 'OwnerSuppliedMed', 'dose': '5mg', 'schedule': ['08:00', '20:00'],
+    }
+    assert result['directory']['revision'] == directory['revision']
+    meds = repo.medications_for(elder_id)
+    assert len(meds) == 1 and meds[0].name == 'OwnerSuppliedMed' and meds[0].schedule == ['08:00', '20:00']
+    audit = repo.recent_events(elder_id)[0]
+    assert audit.type == 'household_setup' and 'add_medication' in audit.detail
+
+    retry = await client.post('/household/manage/confirm', json={
+        'review_token': body['review_token'], 'confirmed': True})
+    assert retry.json() == result
+    assert len(repo.medications_for(elder_id)) == 1
+
+    duplicate = await client.post('/household/manage/review', json={
+        'expected_revision': result['directory']['revision'],
+        'change': {**med_change, 'name': 'ownersuppliedmed', 'dose': '10mg'}})
+    assert duplicate.status_code == 400
+    assert len(repo.medications_for(elder_id)) == 1
+
+    for bad in [
+        {**med_change, 'supply_count': 3},
+        {**med_change, 'schedule': ['25:99']},
+        {**med_change, 'schedule': '08:00'},
+        {'kind': 'add_medication', 'person_id': elder_id, 'name': 'X', 'dose': '1mg'},
+        {'kind': 'add_medication', 'person_id': str(uuid4()), 'name': 'X', 'dose': '1mg', 'schedule': []},
+    ]:
+        response = await client.post('/household/manage/review', json={
+            'expected_revision': result['directory']['revision'], 'change': bad})
+        assert response.status_code == 400
+    assert len(repo.medications_for(elder_id)) == 1
+
+
 async def test_management_routes_absent_without_cognito(monkeypatch):
     from saarthi_mcp.server import build_server
     monkeypatch.setenv('SAARTHI_AUTH', 'local')

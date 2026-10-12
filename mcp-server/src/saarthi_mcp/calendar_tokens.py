@@ -12,6 +12,7 @@ from ctypes import wintypes
 import json
 import os
 from pathlib import Path
+import hashlib
 import sys
 import tempfile
 
@@ -68,7 +69,8 @@ class LocalTokenStore:
     def __init__(self, path: Path):
         self.path = Path(path)
 
-    def save(self, payload: dict) -> None:
+    def save(self, payload: dict, *, subject: str | None = None) -> None:
+        del subject
         _require_windows()
         temporary: Path | None = None
         try:
@@ -100,7 +102,8 @@ class LocalTokenStore:
                     # An orphan here is encrypted; do not obscure the save error.
                     pass
 
-    def load(self) -> dict | None:
+    def load(self, *, subject: str | None = None) -> dict | None:
+        del subject
         try:
             with self.path.open("rb") as stream:
                 _require_windows()
@@ -118,3 +121,26 @@ class LocalTokenStore:
             return None
         except (OSError, ValueError, TypeError, RecursionError):
             raise TokenStoreError("Saved calendar credentials could not be read securely. Reconnect Calendar.") from None
+
+
+class SubjectTokenStore:
+    """Per-Cognito-subject encrypted token files for authenticated Calendar access."""
+
+    def __init__(self, base_dir: Path):
+        self.base_dir = Path(base_dir)
+
+    def _path(self, subject: str) -> Path:
+        if not subject:
+            raise TokenStoreError("Calendar connection requires a signed-in caregiver.")
+        digest = hashlib.sha256(subject.encode("utf-8")).hexdigest()
+        return self.base_dir / f"{digest}.tokens"
+
+    def save(self, payload: dict, *, subject: str | None = None) -> None:
+        if not subject:
+            raise TokenStoreError("Calendar connection requires a signed-in caregiver.")
+        LocalTokenStore(self._path(subject)).save(payload)
+
+    def load(self, *, subject: str | None = None) -> dict | None:
+        if not subject:
+            raise TokenStoreError("Calendar connection requires a signed-in caregiver.")
+        return LocalTokenStore(self._path(subject)).load()

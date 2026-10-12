@@ -69,6 +69,9 @@ def test_alias_collisions_rejected_and_legacy_metadata_care_records_preserved(re
             apply(repo, change)
     apply(repo, {"kind": "rename_person", "person_id": "child", "name": "New child name"})
     assert repo.resolve_person("child").email == "saved@example.com"
+    apply(repo, {"kind": "set_person_email", "person_id": "child", "email": "vasist@example.test"})
+    assert repo.resolve_person("child").email == "vasist@example.test"
+    assert next(p["email"] for p in repo.household_directory()["people"] if p["id"] == "child") == "vasist@example.test"
     assert repo.resolve_person("dad").id == "parent"
     apply(repo, {"kind": "add_person", "id": "a-new-parent", "name": "Another parent", "role": "elder"})
     assert repo.household_directory()["primary_person_id"] == repo.primary_elder().id == "parent"
@@ -157,3 +160,52 @@ def test_competing_first_person_writes_cannot_both_apply_empty_review(repo):
         results = list(executor.map(attempt, ["first", "second"]))
     assert sum(result is not None for result in results) == 1
     assert len(repo.household_directory()["people"]) == 1
+
+
+def test_medication_fact_survives_reconnect_and_concurrent_duplicate_is_rejected(repo):
+    apply(repo, {"kind": "add_person", "id": "parent", "name": "Entered parent", "role": "elder"})
+    before = repo.household_directory()
+    change = {"kind": "add_medication", "person_id": "parent", "name": "Entered medication",
+              "dose": "As entered by caregiver", "schedule": ["08:30", "20:30"]}
+    barrier = Barrier(2)
+
+    def attempt(_):
+        barrier.wait(timeout=10)
+        try:
+            repo.apply_household_change(change, directory_revision(before), actor="caregiver")
+            return True
+        except ValueError as error:
+            assert "already saved" in str(error)
+            return False
+
+    with ThreadPoolExecutor(2) as executor:
+        assert sum(executor.map(attempt, range(2))) == 1
+    reader = Neo4jRepository.from_settings(load_settings().neo4j)
+    try:
+        assert reader.household_directory() == before
+        meds = reader.medications_for("parent")
+        assert len(meds) == 1
+        assert meds[0].name == change["name"] and meds[0].dose == change["dose"]
+        assert meds[0].schedule == change["schedule"] and meds[0].supply_count is None
+        assert reader.dose_logs("parent") == []
+        audits = [e for e in reader.recent_events("parent") if 'add_medication' in e.detail]
+        assert len(audits) == 1
+    finally:
+        reader.close()
+
+
+def test_medication_fact_rolls_back_when_its_audit_cannot_be_saved(repo, monkeypatch):
+    apply(repo, {"kind": "add_person", "id": "parent", "name": "Entered parent", "role": "elder"})
+    original = ManagedTransaction.run
+
+    def fail_audit(self, query, *args, **kwargs):
+        if "household_setup" in query:
+            raise RuntimeError("Injected audit failure")
+        return original(self, query, *args, **kwargs)
+
+    monkeypatch.setattr(ManagedTransaction, "run", fail_audit)
+    with pytest.raises(RuntimeError, match="Injected"):
+        apply(repo, {"kind": "add_medication", "person_id": "parent", "name": "Entered medication",
+                     "dose": "Entered dose text", "schedule": []})
+    assert repo.medications_for("parent") == []
+    assert len(repo.recent_events("parent")) == 1

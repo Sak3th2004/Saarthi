@@ -8,6 +8,8 @@ so the MCP tool contract is unchanged. Works identically on local Docker Neo4j a
 from __future__ import annotations
 
 import uuid
+import json
+import time
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -16,6 +18,7 @@ from neo4j.exceptions import ConstraintError
 from neo4j.time import DateTime as Neo4jDateTime
 
 from saarthi_mcp.config import Neo4jSettings
+from saarthi_mcp.family_recipients import validate_notification_claim
 from saarthi_mcp.directory import (
     DirectoryConflict, canonical_directory, change_audit, directory_revision,
     ensure_label_available, preview_change, validate_change,
@@ -40,6 +43,7 @@ if TYPE_CHECKING:
     from saarthi_mcp.household import HouseholdDefinition
 
 _CONSTRAINTS = (
+    "CREATE CONSTRAINT notification_review_key IF NOT EXISTS FOR (n:NotificationReview) REQUIRE n.key IS UNIQUE",
     "CREATE CONSTRAINT household_directory_key IF NOT EXISTS FOR (d:HouseholdDirectory) REQUIRE d.key IS UNIQUE",
     "CREATE CONSTRAINT person_id IF NOT EXISTS FOR (p:Person) REQUIRE p.id IS UNIQUE",
     "CREATE CONSTRAINT person_setup_slot IF NOT EXISTS FOR (p:Person) REQUIRE p.setup_slot IS UNIQUE",
@@ -129,7 +133,8 @@ class Neo4jRepository:
         elders.sort(key=lambda p: (not bool(p.get("primary", False)), p["id"]))
         return canonical_directory({
             "primary_person_id": elders[0]["id"] if elders else None,
-            "people": [{"id": r["p"]["id"], "name": r["p"]["name"], "role": r["p"]["role"]} for r in rows],
+            "people": [{"id": r["p"]["id"], "name": r["p"]["name"], "role": r["p"]["role"],
+                        "email": r["p"].get("email")} for r in rows],
             "relationships": [{"from_person": r["source"], "to_person": r["target"], "relation": r["relation"]}
                               for r in edges],
         })
@@ -137,6 +142,63 @@ class Neo4jRepository:
     def household_directory(self) -> dict:
         with self._driver.session(database=self._db) as session:
             return session.execute_read(self._directory_in_transaction)
+
+    @staticmethod
+    def _notification_lock(tx):
+        # Share the directory edit lock so recipients cannot change mid-claim.
+        tx.run("MERGE (d:HouseholdDirectory {key:'household'}) "
+               "SET d.version = coalesce(d.version, 0) + 1").consume()
+
+    def create_notification_review(self, operation: dict) -> None:
+        def create(tx):
+            self._notification_lock(tx)
+            active = tx.run("MATCH (n:NotificationReview) WHERE n.state='pending' AND n.expires > $now "
+                            "RETURN count(n) AS count", now=time.time()).single()["count"]
+            if active >= 50:
+                raise ValueError("Too many pending reviews. Wait ten minutes before trying again.")
+            if tx.run("MATCH (n:NotificationReview {key:$key}) RETURN n", key=operation["key"]).single():
+                raise ValueError("This message review already exists.")
+            tx.run("MATCH (p:Person {id:$person_id}) "
+                   "CREATE (p)-[:HAS_NOTIFICATION_REVIEW]->(:NotificationReview "
+                   "{key:$key, actor:$actor, state:'pending', expires:$expires, payload:$payload})",
+                   person_id=operation["person"]["id"], key=operation["key"], actor=operation["actor"],
+                   expires=operation["expires"], payload=json.dumps(operation, ensure_ascii=False)).consume()
+        with self._driver.session(database=self._db) as session:
+            session.execute_write(create)
+
+    def claim_notification_review(self, key: str, actor: str) -> tuple[dict, bool]:
+        def claim(tx):
+            self._notification_lock(tx)
+            row = tx.run("MATCH (n:NotificationReview {key:$key}) RETURN n", key=key).single()
+            operation = json.loads(row["n"]["payload"]) if row else None
+            claimed = validate_notification_claim(operation, actor, self._directory_in_transaction(tx))
+            if claimed:
+                operation["state"] = "uncertain"
+                tx.run("MATCH (n:NotificationReview {key:$key}) SET n.state='uncertain', n.payload=$payload",
+                       key=key, payload=json.dumps(operation, ensure_ascii=False)).consume()
+            return operation, claimed
+        with self._driver.session(database=self._db) as session:
+            return session.execute_write(claim)
+
+    def finish_notification_review(self, key: str, actor: str, result: dict, detail: str) -> dict:
+        def finish(tx):
+            self._notification_lock(tx)
+            row = tx.run("MATCH (n:NotificationReview {key:$key}) RETURN n", key=key).single()
+            operation = json.loads(row["n"]["payload"]) if row else None
+            if operation is None or operation["actor"] != actor or operation["state"] == "pending":
+                raise ValueError("This message operation is unavailable.")
+            if operation.get("result") is not None:
+                return operation["result"]
+            operation["state"] = result["delivery_status"]
+            operation["result"] = result
+            tx.run("MATCH (n:NotificationReview {key:$key}) SET n.state=$state, n.payload=$payload",
+                   key=key, state=operation["state"], payload=json.dumps(operation, ensure_ascii=False)).consume()
+            tx.run("MATCH (p:Person {id:$id}) CREATE (p)-[:EXPERIENCED]->"
+                   "(:Event {type:'notify', detail:$detail, actor:$actor, at:$at})",
+                   id=operation["person"]["id"], detail=detail, actor=actor, at=now_utc()).consume()
+            return result
+        with self._driver.session(database=self._db) as session:
+            return session.execute_write(finish)
 
     def apply_household_change(self, change: dict, expected_revision: str, *, actor: str | None = None) -> dict:
         change = validate_change(change)
@@ -155,6 +217,18 @@ class Neo4jRepository:
                 labels = [(label, r["id"]) for r in rows for label in [r["id"], r["name"], *(r["aliases"] or [])]]
                 target = change.get("id", change.get("person_id"))
                 ensure_label_available(labels, [change["name"], target], target)
+            if kind == "add_medication":
+                med_rows = list(tx.run(
+                    "MATCH (:Person {id:$id})-[:TAKES]->(m:Medication) RETURN m.name AS name LIMIT 101",
+                    id=change["person_id"],
+                ))
+                if any(
+                    isinstance(row["name"], str) and row["name"].strip().casefold() == change["name"].casefold()
+                    for row in med_rows
+                ):
+                    raise ValueError("That medication schedule fact is already saved.")
+                if len(med_rows) >= 100:
+                    raise ValueError("Medication list exceeds the supported size; no records were changed.")
             ids, detail = change_audit(before, after, change)
             if kind == "add_person":
                 tx.run("CREATE (:Person {id:$id, name:$name, role:$role, aliases:[]})",
@@ -162,6 +236,9 @@ class Neo4jRepository:
             elif kind == "rename_person":
                 tx.run("MATCH (p:Person {id:$id}) SET p.name=$name",
                        id=change["person_id"], name=change["name"]).consume()
+            elif kind == "set_person_email":
+                tx.run("MATCH (p:Person {id:$id, role:'family'}) SET p.email=$email",
+                       id=change["person_id"], email=change["email"]).consume()
             elif kind == "set_relationship":
                 tx.run("MATCH (a:Person {id:$source}), (b:Person {id:$target}) "
                        "MERGE (a)-[r:RELATED_TO]->(b) SET r.relation=$relation",
@@ -169,16 +246,28 @@ class Neo4jRepository:
                 if change["to_person"] == after["primary_person_id"]:
                     tx.run("MATCH (p:Person {id:$source, role:'family'}) SET p.relation=$relation",
                            source=change["from_person"], relation=change["relation"]).consume()
-            if after["primary_person_id"] is not None:
-                tx.run("MATCH (p:Person) SET p.primary = (p.id = $primary)", primary=after["primary_person_id"]).consume()
-            if before["primary_person_id"] != after["primary_person_id"]:
-                # Keep the legacy default-elder relationship consistent with the graph.
-                relations = {r["from_person"]: r["relation"] for r in after["relationships"]
-                             if r["to_person"] == after["primary_person_id"]}
-                updates = [{"id": p["id"], "relation": relations.get(p["id"])}
-                           for p in after["people"] if p["role"] == "family"]
-                tx.run("UNWIND $updates AS update MATCH (p:Person {id:update.id}) "
-                       "SET p.relation=update.relation", updates=updates).consume()
+            elif kind == "add_medication":
+                # CREATE after the uniqueness check — never auto-prescribe or invent a name.
+                tx.run(
+                    "MATCH (p:Person {id:$id}) "
+                    "CREATE (p)-[:TAKES]->(m:Medication) "
+                    "SET m.name=$name, m.dose=$dose, m.schedule=$schedule, m.supply_count=null",
+                    id=change["person_id"],
+                    name=change["name"],
+                    dose=change["dose"],
+                    schedule=list(change["schedule"]),
+                ).consume()
+            if kind != "add_medication":
+                if after["primary_person_id"] is not None:
+                    tx.run("MATCH (p:Person) SET p.primary = (p.id = $primary)", primary=after["primary_person_id"]).consume()
+                if before["primary_person_id"] != after["primary_person_id"]:
+                    # Keep the legacy default-elder relationship consistent with the graph.
+                    relations = {r["from_person"]: r["relation"] for r in after["relationships"]
+                                 if r["to_person"] == after["primary_person_id"]}
+                    updates = [{"id": p["id"], "relation": relations.get(p["id"])}
+                               for p in after["people"] if p["role"] == "family"]
+                    tx.run("UNWIND $updates AS update MATCH (p:Person {id:update.id}) "
+                           "SET p.relation=update.relation", updates=updates).consume()
             tx.run("UNWIND $ids AS id MATCH (p:Person {id:id}) "
                    "CREATE (p)-[:EXPERIENCED]->(:Event {type:'household_setup', detail:$detail, actor:$actor, at:$at})",
                    ids=ids, detail=detail, actor=actor, at=now_utc()).consume()

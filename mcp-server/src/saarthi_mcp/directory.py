@@ -28,6 +28,16 @@ def directory_revision(directory: dict) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+_EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+_SCHEDULE_TIME = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]")
+
+# Caregiver-facing copy for medication schedule facts (never medical advice).
+CAREGIVER_MEDICATION_NOTICE = (
+    "This is a caregiver-saved medication schedule fact for household recall. "
+    "It is not medical advice, a prescription, or a dosing recommendation."
+)
+
+
 def validate_change(change: dict) -> dict:
     if not isinstance(change, dict):
         raise ValueError("A household change must be an object.")
@@ -36,6 +46,8 @@ def validate_change(change: dict) -> dict:
         "rename_person": {"person_id", "name"},
         "set_relationship": {"from_person", "to_person", "relation"},
         "set_primary": {"person_id"},
+        "set_person_email": {"person_id", "email"},
+        "add_medication": {"person_id", "name", "dose", "schedule"},
     }
     action = change.get("kind")
     if not isinstance(action, str) or action not in fields or set(change) != fields[action] | {"kind"}:
@@ -43,6 +55,19 @@ def validate_change(change: dict) -> dict:
     result = {"kind": action}
     for key in fields[action]:
         value = change[key]
+        if key == "schedule":
+            if not isinstance(value, list) or len(value) > 24:
+                raise ValueError("Medication schedule must be a list of at most 24 HH:MM times.")
+            times: list[str] = []
+            for item in value:
+                if not isinstance(item, str) or not item.strip():
+                    raise ValueError("Medication schedule times must be nonempty HH:MM text.")
+                item = item.strip()
+                if not _SCHEDULE_TIME.fullmatch(item):
+                    raise ValueError("Saved schedule times must use HH:MM (24-hour clock).")
+                times.append(item)
+            result[key] = times
+            continue
         if not isinstance(value, str) or not value.strip():
             raise ValueError("Household change fields must be nonempty text.")
         value = value.strip()
@@ -52,6 +77,9 @@ def validate_change(change: dict) -> dict:
         elif key == "role":
             if value not in {"elder", "family"}:
                 raise ValueError("Person role must be elder or family.")
+        elif key == "email":
+            if len(value) > 200 or not _EMAIL.fullmatch(value):
+                raise ValueError("Enter a valid family email address of at most 200 characters.")
         elif len(value) > 200 or any(unicodedata.category(c).startswith("C") for c in value):
             raise ValueError("Names and relationships must be plain text of at most 200 characters.")
         result[key] = value
@@ -75,20 +103,29 @@ def preview_change(directory: dict, change: dict) -> dict:
         if change["id"] in people:
             raise ValueError("This person ID is already saved.")
         ensure_label_available(labels, [change["id"], change["name"]], change["id"])
-        result["people"].append({k: change[k] for k in ("id", "name", "role")})
+        result["people"].append({**{k: change[k] for k in ("id", "name", "role")}, "email": None})
         if result["primary_person_id"] is None and change["role"] == "elder":
             result["primary_person_id"] = change["id"]
-    elif action in {"rename_person", "set_primary"}:
+    elif action in {"rename_person", "set_primary", "set_person_email"}:
         person = people.get(change["person_id"])
         if person is None:
             raise ValueError("Choose a saved household member.")
         if action == "rename_person":
             ensure_label_available(labels, [change["name"]], person["id"])
             person["name"] = change["name"]
-        else:
+        elif action == "set_primary":
             if person["role"] != "elder":
                 raise ValueError("The default notebook must belong to a person receiving care.")
             result["primary_person_id"] = person["id"]
+        else:
+            if person["role"] != "family":
+                raise ValueError("Family notification email can only be saved for family members.")
+            person["email"] = change["email"]
+    elif action == "add_medication":
+        if change["person_id"] not in people:
+            raise ValueError("Choose a saved household member.")
+        # Medication facts are care records, not directory metadata; revision stays the same.
+        return before
     else:
         source, target = change["from_person"], change["to_person"]
         if source not in people or target not in people or source == target:
@@ -102,8 +139,18 @@ def preview_change(directory: dict, change: dict) -> dict:
     return result
 
 
+def medication_fact(change: dict) -> dict:
+    """Normalized caregiver-saved medication payload (no supply or advice fields)."""
+    return {
+        "person_id": change["person_id"],
+        "name": change["name"],
+        "dose": change["dose"],
+        "schedule": list(change["schedule"]),
+    }
+
+
 def change_audit(before: dict, after: dict, change: dict) -> tuple[list[str], str]:
-    """Record actual metadata differences, never claims about medications or invitations."""
+    """Record actual differences for directory metadata or caregiver-saved medication facts."""
     action = change["kind"]
     if action == "set_relationship":
         ids = [change["from_person"], change["to_person"]]
@@ -112,6 +159,10 @@ def change_audit(before: dict, after: dict, change: dict) -> tuple[list[str], st
     elif action == "set_primary":
         old, new = before["primary_person_id"], after["primary_person_id"]
         ids = sorted({v for v in (old, new) if v is not None})
+    elif action == "add_medication":
+        ids = [change["person_id"]]
+        old = None
+        new = medication_fact(change)
     else:
         ids = [change.get("id", change.get("person_id"))]
         old = next((p for p in before["people"] if p["id"] == ids[0]), None)

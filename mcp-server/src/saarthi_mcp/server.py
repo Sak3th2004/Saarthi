@@ -17,12 +17,14 @@ from pydantic import Field
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from fastmcp.server.dependencies import get_access_token
 from fastmcp.tools.base import ToolResult
 
 from saarthi_mcp.config import Settings, load_settings
 from saarthi_mcp.auth import HouseholdTokenVerifier
 from saarthi_mcp.graph import MemoryGraph, memory_graph
 from saarthi_mcp.models import (
+    Appointment,
     AppointmentList,
     AppointmentResult,
     CheckInResult,
@@ -30,12 +32,14 @@ from saarthi_mcp.models import (
     DoseStatus,
     EventResult,
     HouseholdSummary,
+    ListedAppointment,
     MedicationSchedule,
     MemoryAnswer,
     NotifyResult,
     Person,
     Urgency,
 )
+from saarthi_mcp.family_notifications import FamilyNotificationService, attach_family_notification_routes
 from saarthi_mcp.repository import (
     HouseholdRepository,
     InMemoryRepository,
@@ -67,6 +71,11 @@ def _result(model) -> ToolResult:
     return ToolResult(content=model.speech, structured_content=model.model_dump(mode="json"))
 
 
+def _listed_appointment(appt: Appointment) -> ListedAppointment:
+    status = "calendar_saved" if appt.calendar_event_id else "not_requested"
+    return ListedAppointment(**appt.model_dump(), external_booking_status=status)
+
+
 def build_server(repo: HouseholdRepository | None = None, orchestrator=None) -> FastMCP:
     """Create an independent server; handlers capture only this instance's dependencies.
 
@@ -84,6 +93,15 @@ def build_server(repo: HouseholdRepository | None = None, orchestrator=None) -> 
             model_id=settings.bedrock_model_id, region=settings.aws_region,
         )
     verifier = HouseholdTokenVerifier(settings.cognito) if settings.cognito else None
+    family_notify = FamilyNotificationService(repo, ses_settings=settings.ses)
+    def notification_actor():
+        if settings.cognito is None:
+            return "local"
+        identity = get_access_token()
+        subject = identity.claims.get("sub") if identity is not None else None
+        if not isinstance(subject, str) or subject not in settings.cognito.allowed_subjects:
+            raise ToolError("Sign in before reviewing or confirming family messages.")
+        return subject
     mcp = FastMCP(
         name="Saarthi",
         auth=verifier,
@@ -207,9 +225,12 @@ def build_server(repo: HouseholdRepository | None = None, orchestrator=None) -> 
         meds = repo.medications_for(p.id)
         if meds:
             lines = ", ".join(f"{m.name} {m.dose} at {'/'.join(m.schedule)}" for m in meds)
-            speech = f"{p.name} takes: {lines}."
+            speech = (
+                f"Caregiver-saved medication schedule facts for {p.name}: {lines}. "
+                "These are saved household records, not medical advice."
+            )
         else:
-            speech = f"No medications are on record for {p.name}."
+            speech = f"No caregiver-saved medication schedule facts are on record for {p.name}."
         return _result(MedicationSchedule(person=p, medications=meds, speech=speech))
 
 
@@ -258,31 +279,40 @@ def build_server(repo: HouseholdRepository | None = None, orchestrator=None) -> 
             speech = f"{p.name} has {len(appts)} upcoming: {lines}."
         else:
             speech = f"{p.name} has no upcoming appointments."
-        return _result(AppointmentList(person=p, appointments=appts, speech=speech))
+        listed = [_listed_appointment(a) for a in appts]
+        return _result(AppointmentList(person=p, appointments=listed, speech=speech))
 
 
     @mcp.tool
+    @_orchestrated("notify_family")
     def notify_family(person: str, message: str, urgency: Urgency = Urgency.info) -> ToolResult:
-        """Record a message to route to the family. (Live SMS/email delivery is wired in Week 4.)"""
+        """Record a family message without sending email. Use review/confirm tools to deliver via SES."""
         p = _resolve(person)
-        contacts = repo.family_contacts()
-        channels: list[str] = []
-        for c in contacts:
-            if c.phone:
-                channels.append(f"sms:{c.phone}")
-            if c.email:
-                channels.append(f"email:{c.email}")
-        repo.add_event(
-            p.id, type="notify", detail=f"[{urgency.value}] {message}", at=now_utc()
+        return _result(family_notify.record_only(p, message, urgency))
+
+    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False})
+    def review_family_notification(
+        person: str, message: str, urgency: Urgency = Urgency.info
+    ) -> ToolResult:
+        """Prepare a scoped family email for review. Nothing is sent until explicit confirmation."""
+        try:
+            preview = family_notify.review(person, message, urgency, actor=notification_actor())
+        except ValueError as exc:
+            raise ToolError(str(exc)) from None
+        speech = (
+            f"Ready to review a {urgency.value} email about {_resolve(person).name} to "
+            f"{len(preview['recipient_emails'])} household address(es). Confirm before sending."
         )
-        names = ", ".join(c.name for c in contacts) or "the family"
-        speech = f"Recorded a {urgency.value} message about {p.name} for {names}. No SMS or email has been sent."
-        return _result(
-            NotifyResult(
-                person=p, delivered_to=[], candidate_channels=channels,
-                urgency=urgency, message=message, speech=speech
-            )
-        )
+        return ToolResult(content=speech, structured_content={**preview, "speech": speech})
+
+    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+    def confirm_family_notification(review_token: str, confirmed: bool = False) -> ToolResult:
+        """Send the reviewed family email through SES after explicit user approval."""
+        try:
+            result = family_notify.confirm(review_token, confirmed=confirmed, actor=notification_actor())
+        except ValueError as exc:
+            raise ToolError(str(exc)) from None
+        return _result(result)
 
 
     @mcp.tool
@@ -340,6 +370,7 @@ def build_server(repo: HouseholdRepository | None = None, orchestrator=None) -> 
 
 
     @mcp.tool
+    @_orchestrated("check_in")
     def check_in(person: str) -> ToolResult:
         """Report recorded missed doses and low supply, without inferring wellbeing."""
         p = _resolve(person)
@@ -383,6 +414,7 @@ def build_server(repo: HouseholdRepository | None = None, orchestrator=None) -> 
         from saarthi_mcp.household_management import HouseholdManagement, attach_household_management
         attach_household_management(mcp, HouseholdManagement(repo, persistent=settings.backend == 'neo4j'),
                                     verifier, settings.cognito.resource_url)
+        attach_family_notification_routes(mcp, family_notify, verifier, settings.cognito.resource_url)
     return mcp
 
 
@@ -394,9 +426,25 @@ def run() -> None:
     if settings.local_setup:
         from saarthi_mcp.household_setup import HouseholdSetup, attach_household_setup
         attach_household_setup(server, HouseholdSetup(repository, persistent=settings.backend == "neo4j"))
-    from saarthi_mcp.google_calendar import configured_calendar, attach_calendar_routes
-    calendar = configured_calendar(settings)
-    if calendar is not None:
+    from saarthi_mcp.google_calendar import (
+        attach_authenticated_calendar_routes,
+        attach_calendar_routes,
+        configured_calendar,
+    )
+    calendar = configured_calendar(
+        settings, authenticated=settings.cognito is not None
+    )
+    if calendar is not None and settings.cognito is not None:
+        verifier = HouseholdTokenVerifier(settings.cognito)
+        attach_authenticated_calendar_routes(server, calendar, verifier, settings.cognito.resource_url)
+        from saarthi_mcp.calendar_appointments import (
+            CalendarAppointments,
+            attach_authenticated_appointment_routes,
+        )
+        attach_authenticated_appointment_routes(
+            server, CalendarAppointments(calendar, repository), verifier, settings.cognito.resource_url
+        )
+    elif calendar is not None:
         attach_calendar_routes(server, calendar)
         from saarthi_mcp.calendar_appointments import CalendarAppointments, attach_appointment_routes
         attach_appointment_routes(server, CalendarAppointments(calendar, repository))

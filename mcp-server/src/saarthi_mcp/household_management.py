@@ -16,7 +16,14 @@ from urllib.parse import urlsplit
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
-from saarthi_mcp.directory import DirectoryConflict, directory_revision, preview_change, validate_change
+from saarthi_mcp.directory import (
+    CAREGIVER_MEDICATION_NOTICE,
+    DirectoryConflict,
+    directory_revision,
+    medication_fact,
+    preview_change,
+    validate_change,
+)
 
 
 class ManagementError(ValueError):
@@ -40,6 +47,16 @@ class HouseholdManagement:
             raise ManagementError(400, 'Invalid directory request.')
         return self._directory(self.repository.household_directory())
 
+    def _medication_review_guard(self, change):
+        """Reject duplicate caregiver-saved med facts before a review token is issued."""
+        if change['kind'] != 'add_medication':
+            return
+        existing = self.repository.medications_for(change['person_id'])
+        if any(m.name.strip().casefold() == change['name'].casefold() for m in existing):
+            raise ValueError('That medication schedule fact is already saved.')
+        if len(existing) >= 100:
+            raise ValueError('Medication list exceeds the supported size; no records were changed.')
+
     def review(self, payload, subject):
         if (not isinstance(payload, dict) or set(payload) != {'expected_revision', 'change'}
                 or not isinstance(payload['expected_revision'], str)
@@ -51,6 +68,7 @@ class HouseholdManagement:
             if directory_revision(directory) != payload['expected_revision']:
                 raise ManagementError(409, 'Family details changed. Refresh and review again.')
             preview_change(directory, change)
+            self._medication_review_guard(change)
             now = time.monotonic()
             self.reviews = {key: value for key, value in self.reviews.items() if value['expires'] > now}
             if len(self.reviews) >= 100 or sum(r['subject'] == subject for r in self.reviews.values()) >= 20:
@@ -58,8 +76,11 @@ class HouseholdManagement:
             token = secrets.token_urlsafe(32)
             self.reviews[token] = {'subject': subject, 'change': change, 'revision': payload['expected_revision'],
                                    'expires': now + 600, 'result': None}
-            return {'review_token': token, 'change': copy.deepcopy(change),
-                    'expires_in_seconds': 600, 'persistence': self.persistence}
+            result = {'review_token': token, 'change': copy.deepcopy(change),
+                      'expires_in_seconds': 600, 'persistence': self.persistence}
+            if change['kind'] == 'add_medication':
+                result['notice'] = CAREGIVER_MEDICATION_NOTICE
+            return result
 
     def confirm(self, payload, subject):
         if (not isinstance(payload, dict) or set(payload) != {'review_token', 'confirmed'}
@@ -72,7 +93,11 @@ class HouseholdManagement:
             if review['result'] is not None:
                 return copy.deepcopy(review['result'])
             directory = self.repository.apply_household_change(review['change'], review['revision'], actor=subject)
-            review['result'] = {'status': 'saved', 'directory': self._directory(directory)}
+            result = {'status': 'saved', 'directory': self._directory(directory)}
+            if review['change']['kind'] == 'add_medication':
+                result['medication'] = medication_fact(review['change'])
+                result['notice'] = CAREGIVER_MEDICATION_NOTICE
+            review['result'] = result
             return copy.deepcopy(review['result'])
 
 

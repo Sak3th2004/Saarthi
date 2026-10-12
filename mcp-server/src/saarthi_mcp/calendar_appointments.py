@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 from fastmcp.exceptions import ToolError
+from fastmcp.server.dependencies import get_access_token
 
 
 class AppointmentDraft(BaseModel):
@@ -60,7 +61,7 @@ class CalendarAppointments:
         self.reviews = {}
         self.lock = threading.Lock()
 
-    def review(self, raw):
+    def review(self, raw, *, subject: str | None = None):
         try:
             draft = AppointmentDraft.model_validate(raw)
         except ValidationError:
@@ -90,14 +91,19 @@ class CalendarAppointments:
             self.reviews = {k: v for k, v in self.reviews.items() if v["expires"] > now}
             if len(self.reviews) >= 50:
                 raise ValueError("Too many pending reviews. Wait ten minutes before trying again.")
-            self.reviews[token] = {"body": body, "person_id": person.id, "expires": now + 600}
+            self.reviews[token] = {
+                "body": body,
+                "person_id": person.id,
+                "expires": now + 600,
+                "subject": subject,
+            }
         return {"review_token": token, "person": {"id": person.id, "name": person.name},
                 "title": draft.title, "start": start.isoformat(), "end": end.isoformat(),
                 "time_zone": zone.key, "calendar_account": self.connection.config.account,
                 "notice": "Creates a private calendar entry and household record. No guests, reminders or clinic booking request.",
                 "expires_in_seconds": 600}
 
-    def confirm(self, raw):
+    def confirm(self, raw, *, subject: str | None = None):
         if not isinstance(raw, dict) or set(raw) != {"review_token", "confirmed"} or raw.get("confirmed") is not True or not isinstance(raw.get("review_token"), str):
             raise ValueError("Review the details and explicitly confirm before saving.")
         # Serialize confirmations: double clicks must not race the external write.
@@ -105,13 +111,15 @@ class CalendarAppointments:
             review = self.reviews.get(raw["review_token"])
             if not review or review["expires"] <= time.monotonic():
                 raise ValueError("Review expired. Review the appointment again before saving.")
+            if review["subject"] != subject:
+                raise ValueError("Review belongs to a different sign-in. Review the appointment again.")
             body = review["body"]
             person = self.repository.resolve_person(review["person_id"])
             if person.id != review["person_id"]:
                 raise ValueError("Saved person changed; review again.")
             start = datetime.fromisoformat(body["start"]["dateTime"])
             end = datetime.fromisoformat(body["end"]["dateTime"])
-            self.connection.create_confirmed(body)
+            self.connection.create_confirmed(body, subject=review.get("subject"))
             try:
                 appointment = self.repository.save_calendar_appointment(person.id, body["id"], body["summary"],
                     start, end, body["start"]["timeZone"])
@@ -123,13 +131,71 @@ class CalendarAppointments:
                     "message": "Saved to Google Calendar and household memory. This is not confirmation from a clinic."}
 
 
-def attach_appointment_routes(server, service):
+def attach_authenticated_appointment_routes(server, service, verifier, resource_url):
+    from urllib.parse import urlsplit
+
+    resource = urlsplit(resource_url)
+    allowed_origin = f"{resource.scheme}://{resource.netloc}"
+
+    async def handle(request, action):
+        headers = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+        authorization = request.headers.getlist("authorization")
+        if (len(authorization) != 1 or not authorization[0].startswith("Bearer ")
+                or len(authorization[0]) > 16384):
+            return JSONResponse({"error": "Sign-in required."}, status_code=401, headers=headers)
+        try:
+            identity = await verifier.verify_token(authorization[0][7:])
+        except Exception:
+            identity = None
+        if identity is None:
+            return JSONResponse({"error": "Sign-in required."}, status_code=401, headers=headers)
+        if (request.headers.get("origin") != allowed_origin
+                or request.headers.get("sec-fetch-site") == "cross-site"):
+            return JSONResponse({"error": "Open the household dashboard to review appointments."}, status_code=403, headers=headers)
+        if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
+            return JSONResponse({"error": "Use a JSON request."}, status_code=415, headers=headers)
+        data = bytearray()
+        async for chunk in request.stream():
+            data.extend(chunk)
+            if len(data) > 8192:
+                return JSONResponse({"error": "Appointment request is too large."}, status_code=413, headers=headers)
+        try:
+            payload = json.loads(data)
+            result = await run_in_threadpool(action, payload, subject=identity.claims["sub"])
+            return JSONResponse(result, headers=headers)
+        except (ValueError, UnicodeDecodeError) as exc:
+            message = "Invalid appointment request." if isinstance(exc, (json.JSONDecodeError, UnicodeDecodeError)) else str(exc)
+            return JSONResponse({"error": message}, status_code=400, headers=headers)
+        except Exception:
+            return JSONResponse({"error": "Appointment request could not be completed."}, status_code=503, headers=headers)
+
+    @server.custom_route("/household/calendar/appointments/review", methods=["POST"])
+    async def review_authenticated(request):
+        return await handle(request, service.review)
+
+    @server.custom_route("/household/calendar/appointments/confirm", methods=["POST"])
+    async def confirm_authenticated(request):
+        return await handle(request, service.confirm)
+
+    _attach_appointment_tools(server, service, authenticated=True)
+
+
+def _attach_appointment_tools(server, service, *, authenticated: bool):
+    def subject():
+        if not authenticated:
+            return None
+        identity = get_access_token()
+        value = identity.claims.get("sub") if identity is not None else None
+        if not isinstance(value, str) or not value:
+            raise ToolError("Sign in before reviewing or confirming Calendar appointments.")
+        return value
+
     @server.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False})
     def review_calendar_appointment(person: str, title: str, start_local: str, end_local: str, time_zone: str) -> dict:
         """Prepare a Calendar entry for review. Show all returned details to the user; this saves nothing."""
         try:
             return service.review({"person": person, "title": title, "start_local": start_local,
-                                   "end_local": end_local, "time_zone": time_zone})
+                                   "end_local": end_local, "time_zone": time_zone}, subject=subject())
         except ValueError as exc:
             raise ToolError(str(exc)) from None
 
@@ -141,15 +207,18 @@ def attach_appointment_routes(server, service):
         A calendar entry does not book or confirm an appointment with a provider.
         """
         try:
-            return service.confirm({"review_token": review_token, "confirmed": confirmed})
+            return service.confirm({"review_token": review_token, "confirmed": confirmed}, subject=subject())
         except ValueError as exc:
             raise ToolError(str(exc)) from None
+
+def attach_appointment_routes(server, service, *, allowed_origins=("http://127.0.0.1:8080", "http://127.0.0.1:5173")):
+    _attach_appointment_tools(server, service, authenticated=False)
 
     async def handle(request, action):
         headers = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
         if (request.client is None or request.client.host != "127.0.0.1"
                 or request.headers.get("host") != "127.0.0.1:8080"
-                or request.headers.get("origin") not in ("http://127.0.0.1:8080", "http://127.0.0.1:5173")
+                or request.headers.get("origin") not in allowed_origins
                 or request.headers.get("content-type", "").split(";")[0].strip() != "application/json"
                 or request.headers.get("sec-fetch-site") == "cross-site"):
             return JSONResponse({"error": "Open the local dashboard to review and confirm appointments."}, status_code=403, headers=headers)

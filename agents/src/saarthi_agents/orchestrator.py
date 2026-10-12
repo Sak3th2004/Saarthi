@@ -17,6 +17,27 @@ _SPECIALISTS = {
     "query_memory": "MedGuardian",
     "book_appointment": "Appointments",
     "list_appointments": "Appointments",
+    "notify_family": "FamilyLoop",
+    "check_in": "Watch",
+}
+_SPECIALIST_INSTRUCTIONS: dict[str, str] = {
+    "MedGuardian": (
+        "Call execute_request exactly once to process the validated operation. "
+        "Arguments are already bound by the application. After the tool, stop."
+    ),
+    "Appointments": (
+        "Call execute_request exactly once. Never claim a provider, clinic, or calendar "
+        "confirmed or booked the appointment; the application records schedule facts only."
+    ),
+    "FamilyLoop": (
+        "Call execute_request exactly once. Never claim SMS, email, or push was delivered; "
+        "routing is recorded only until live SNS/SES wiring is enabled."
+    ),
+    "Watch": (
+        "Call execute_request exactly once. Never infer wellbeing, diagnose, or take medical "
+        "action. Surface only saved-record concerns from the application result. Escalation "
+        "means suggesting the family use notify_family separately; do not send notifications yourself."
+    ),
 }
 _GUARDRAILS = (
     "Never diagnose, recommend treatment, calculate doses, or give medical advice. "
@@ -58,6 +79,65 @@ class _CallBudget:
         self.calls += 1
 
 
+def _audit_evidence(operation: str, completed: dict[str, Any] | None) -> dict[str, Any]:
+    """Structured, non-narrated facts from the application result for the action feed."""
+    if completed is None:
+        return {}
+    evidence: dict[str, Any] = {"operation": operation}
+    if operation == "check_in":
+        concerns = completed.get("concerns") or []
+        evidence["missed_doses_today"] = completed.get("missed_doses_today")
+        evidence["concern_count"] = len(concerns) if isinstance(concerns, list) else None
+        evidence["ok"] = completed.get("ok")
+    elif operation == "notify_family":
+        evidence["urgency"] = completed.get("urgency")
+        channels = completed.get("candidate_channels") or completed.get("delivered_to") or []
+        evidence["channels_listed"] = len(channels) if isinstance(channels, list) else None
+        evidence["delivery_status"] = "recorded_only"
+    elif operation == "log_dose":
+        evidence["already_logged"] = completed.get("already_logged")
+        dose = completed.get("dose")
+        if isinstance(dose, dict):
+            evidence["dose_status"] = dose.get("status")
+    elif operation in {"book_appointment", "list_appointments"}:
+        if operation == "list_appointments":
+            appts = completed.get("appointments")
+            evidence["appointment_count"] = len(appts) if isinstance(appts, list) else None
+        else:
+            evidence["external_booking_status"] = completed.get("external_booking_status", "not_requested")
+    elif operation == "query_memory":
+        supporting = completed.get("supporting_events")
+        evidence["supporting_event_count"] = len(supporting) if isinstance(supporting, list) else None
+    elif operation == "get_medication_schedule":
+        meds = completed.get("medications")
+        evidence["medication_count"] = len(meds) if isinstance(meds, list) else None
+    return evidence
+
+
+def _feed_summary(
+    operation: str, specialist: str | None, status: str, evidence: dict[str, Any],
+) -> str:
+    """One dashboard-safe line; never copies speech or free-form model text."""
+    name = specialist or "none"
+    if status != "completed":
+        return f"{name} · {operation} · {status}"
+    if operation == "check_in":
+        count = evidence.get("concern_count")
+        if count:
+            return f"Watch check-in · {count} recorded concern(s) · escalate via notify_family if needed"
+        return "Watch check-in · no missed doses or low supply on record today (UTC)"
+    if operation == "notify_family":
+        urgency = evidence.get("urgency") or "info"
+        return f"FamilyLoop · {urgency} message recorded · delivery not sent (recorded_only)"
+    if operation == "log_dose":
+        if evidence.get("already_logged"):
+            return "MedGuardian · dose already logged · no change"
+        return f"MedGuardian · dose marked {evidence.get('dose_status', 'updated')}"
+    if operation == "book_appointment":
+        return "Appointments · schedule record saved · no provider booking requested"
+    return f"{name} · {operation} · completed"
+
+
 def _usage_snapshot(agent: Agent | None, budget: _CallBudget, role: str, finished: bool) -> dict[str, Any]:
     """Keep provider-reported counts without making missing telemetry look like free inference."""
     counts = {"inputTokens": None, "outputTokens": None, "totalTokens": None}
@@ -81,7 +161,7 @@ class CareOrchestrator:
     """Fresh router and specialist agents per request, with a single bound action.
 
     model_factory(role) optionally supplies a Strands Model for offline tests;
-    role is 'Orchestrator', 'MedGuardian', or 'Appointments'.
+    role is 'Orchestrator', 'MedGuardian', 'Appointments', 'FamilyLoop', or 'Watch'.
     """
 
     def __init__(
@@ -168,8 +248,7 @@ class CareOrchestrator:
                             tools=[execute_request],
                             system_prompt=(
                                 f"You are Saarthi's {specialist_name}. " + _GUARDRAILS
-                                + "Call execute_request exactly once to process the validated operation. "
-                                "Arguments are already bound by the application. After the tool, stop."
+                                + _SPECIALIST_INSTRUCTIONS[specialist_name]
                             ),
                             callback_handler=None,
                             hooks=[specialist_budget],
@@ -218,12 +297,16 @@ class CareOrchestrator:
             else:
                 reason = "model_failed" if model_failed else "action_not_executed"
 
+        status = "completed" if completed is not None else "failed"
+        evidence = _audit_evidence(operation, completed)
         outcome = {
             "operation": operation if specialist_name else "unsupported",
             "specialist": specialist_name or "none",
-            "status": "completed" if completed is not None else "failed",
+            "status": status,
             "reason": reason,
             "stages": stages,
+            "evidence": evidence,
+            "feed_summary": _feed_summary(operation, specialist_name, status, evidence),
             "model_id": self.model_id,
             "model_usage": usage,
             "elapsed_ms": round((monotonic() - started) * 1000),

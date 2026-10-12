@@ -1,9 +1,18 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
-  "Description": "Saarthi household sign-in. No app hosting, IAM roles, users, invitations or SMS resources.",
+  "Description": "Saarthi household sign-in. No app hosting, IAM roles, users, invitations or SMS resources. Optional ProductionDashboardOrigin adds a second callback and resource server without removing localhost.",
   "Parameters": {
     "DomainPrefix": {"Type": "String", "AllowedPattern": "[a-z0-9][a-z0-9-]{1,60}[a-z0-9]"},
-    "DashboardOrigin": {"Type": "String", "Default": "http://localhost:5173", "AllowedPattern": "https://[A-Za-z0-9.-]+(:[0-9]+)?|http://localhost:[0-9]+"}
+    "DashboardOrigin": {"Type": "String", "Default": "http://localhost:5173", "AllowedPattern": "https://[A-Za-z0-9.-]+(:[0-9]+)?|http://localhost:[0-9]+"},
+    "ProductionDashboardOrigin": {
+      "Type": "String",
+      "Default": "",
+      "Description": "Leave empty for localhost-only. When set (https Amplify/Vercel origin), adds prod callback/logout and a second notebook resource server. Does not remove DashboardOrigin URLs.",
+      "AllowedPattern": "^$|https://[A-Za-z0-9.-]+(:[0-9]+)?"
+    }
+  },
+  "Conditions": {
+    "HasProductionOrigin": {"Fn::Not": [{"Fn::Equals": [{"Ref": "ProductionDashboardOrigin"}, ""]}]}
   },
   "Resources": {
     "HouseholdPool": {
@@ -29,6 +38,16 @@
       "Type": "AWS::Cognito::UserPoolResourceServer",
       "Properties": {"UserPoolId": {"Ref": "HouseholdPool"}, "Identifier": {"Fn::Sub": "${DashboardOrigin}/mcp"}, "Name": "Saarthi notebook", "Scopes": [{"ScopeName": "notebook", "ScopeDescription": "Access the household notebook; server membership is also required"}]}
     },
+    "ProductionNotebookScope": {
+      "Type": "AWS::Cognito::UserPoolResourceServer",
+      "Condition": "HasProductionOrigin",
+      "Properties": {
+        "UserPoolId": {"Ref": "HouseholdPool"},
+        "Identifier": {"Fn::Sub": "${ProductionDashboardOrigin}/mcp"},
+        "Name": "Saarthi notebook production",
+        "Scopes": [{"ScopeName": "notebook", "ScopeDescription": "Access the household notebook from the hosted dashboard; server membership is also required"}]
+      }
+    },
     "DashboardClient": {
       "Type": "AWS::Cognito::UserPoolClient",
       "DependsOn": "NotebookScope",
@@ -38,10 +57,38 @@
         "GenerateSecret": false,
         "AllowedOAuthFlowsUserPoolClient": true,
         "AllowedOAuthFlows": ["code"],
-        "AllowedOAuthScopes": ["openid", {"Fn::Sub": "${NotebookScope}/notebook"}],
+        "AllowedOAuthScopes": {
+          "Fn::If": [
+            "HasProductionOrigin",
+            [
+              "openid",
+              {"Fn::Sub": "${NotebookScope}/notebook"},
+              {"Fn::Sub": "${ProductionNotebookScope}/notebook"}
+            ],
+            ["openid", {"Fn::Sub": "${NotebookScope}/notebook"}]
+          ]
+        },
         "SupportedIdentityProviders": ["COGNITO"],
-        "CallbackURLs": [{"Fn::Sub": "${DashboardOrigin}/auth/callback"}],
-        "LogoutURLs": [{"Fn::Sub": "${DashboardOrigin}/"}],
+        "CallbackURLs": {
+          "Fn::If": [
+            "HasProductionOrigin",
+            [
+              {"Fn::Sub": "${DashboardOrigin}/auth/callback"},
+              {"Fn::Sub": "${ProductionDashboardOrigin}/auth/callback"}
+            ],
+            [{"Fn::Sub": "${DashboardOrigin}/auth/callback"}]
+          ]
+        },
+        "LogoutURLs": {
+          "Fn::If": [
+            "HasProductionOrigin",
+            [
+              {"Fn::Sub": "${DashboardOrigin}/"},
+              {"Fn::Sub": "${ProductionDashboardOrigin}/"}
+            ],
+            [{"Fn::Sub": "${DashboardOrigin}/"}]
+          ]
+        },
         "AccessTokenValidity": 15,
         "IdTokenValidity": 15,
         "RefreshTokenValidity": 1,
@@ -70,6 +117,14 @@
     "ClientId": {"Value": {"Ref": "DashboardClient"}},
     "LoginDomain": {"Value": {"Fn::Sub": "https://${DomainPrefix}.auth.${AWS::Region}.amazoncognito.com"}},
     "RedirectUri": {"Value": {"Fn::Sub": "${DashboardOrigin}/auth/callback"}},
-    "ResourceUrl": {"Value": {"Fn::Sub": "${DashboardOrigin}/mcp"}}
+    "ResourceUrl": {"Value": {"Fn::Sub": "${DashboardOrigin}/mcp"}},
+    "ProductionRedirectUri": {
+      "Condition": "HasProductionOrigin",
+      "Value": {"Fn::Sub": "${ProductionDashboardOrigin}/auth/callback"}
+    },
+    "ProductionResourceUrl": {
+      "Condition": "HasProductionOrigin",
+      "Value": {"Fn::Sub": "${ProductionDashboardOrigin}/mcp"}
+    }
   }
 }

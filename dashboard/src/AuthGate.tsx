@@ -4,6 +4,8 @@ import { client, createDashboardClient, httpCaller } from './client';
 import { authConfig, beginLogin, finishLogin, logoutUrl, signInErrorMessage, type AuthConfig, type Session } from './auth';
 import { NotebookAccessError } from './notebookErrors';
 import { createHouseholdManagementClient } from './householdManagementClient';
+import { createHouseholdCalendarClient } from './householdCalendarClient';
+import { createHouseholdNotifyClient } from './householdNotifyClient';
 
 export function AuthGate() {
   const configuration = useMemo(() => {
@@ -33,10 +35,13 @@ export function AuthGate() {
     if (!session || Date.now() >= session.expiresAt - 5000) throw new NotebookAccessError();
     return session.accessToken;
   })), [session]);
-  const householdManagement = useMemo(() => createHouseholdManagementClient(() => {
+  const accessToken = () => {
     if (!session || Date.now() >= session.expiresAt - 5000) throw new NotebookAccessError();
     return session.accessToken;
-  }), [session]);
+  };
+  const householdManagement = useMemo(() => createHouseholdManagementClient(accessToken), [session]);
+  const householdCalendar = useMemo(() => createHouseholdCalendarClient(accessToken), [session]);
+  const householdNotify = useMemo(() => createHouseholdNotifyClient(accessToken), [session]);
   if (!configuration.error && !configuration.config) return <App client={client} />;
   async function signIn(config: AuthConfig) {
     setBusy(true); setError('');
@@ -45,7 +50,7 @@ export function AuthGate() {
   }
   if (session && configuration.config) return <>
     <div className="auth-controls"><button className="button secondary" onClick={() => { setSession(null); window.location.assign(logoutUrl(configuration.config!)); }}>Sign out</button></div>
-    <App key={session.expiresAt} client={authenticated} localTools={false} householdManagement={householdManagement} />
+    <App key={session.expiresAt} client={authenticated} localTools={false} householdManagement={householdManagement} householdCalendar={householdCalendar} householdNotify={householdNotify} />
   </>;
   return <main><section className="card"><p className="eyebrow">SAARTHI FAMILY NOTEBOOK</p><h1>A private place for your family.</h1><p>Sign in with your approved caregiver account to open the household notebook.</p>
     {(error || configuration.error) && <p className="notice error" role="alert">{error || configuration.error}</p>}

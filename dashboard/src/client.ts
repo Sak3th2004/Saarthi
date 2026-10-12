@@ -87,7 +87,12 @@ export function parseView(value: unknown): HouseholdView {
       if (r.supply_count !== null && r.supply_count !== undefined && (typeof r.supply_count !== 'number' || !Number.isInteger(r.supply_count) || r.supply_count < 0)) throw invalid();
       return { name: text(r.name), dose: text(r.dose), schedule: list(r.schedule).map(text), supply_count: r.supply_count as number | null | undefined };
     }),
-    appointments: nodes.filter(n => n.kind === 'appointment').map(({ record: r }) => ({ id: text(r.id), kind: text(r.kind), when: date(r.when), status: text(r.status) })),
+    appointments: nodes.filter(n => n.kind === 'appointment').map(({ record: r }) => ({
+      id: text(r.id), kind: text(r.kind), when: date(r.when), status: text(r.status),
+      external_booking_status: typeof r.calendar_event_id === 'string' && r.calendar_event_id
+        ? 'calendar_saved' as const
+        : 'not_requested' as const,
+    })),
     events: nodes.filter(n => n.kind === 'event').map(n => event(n.record)),
   };
 }

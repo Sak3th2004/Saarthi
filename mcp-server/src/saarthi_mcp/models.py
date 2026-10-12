@@ -120,17 +120,26 @@ class AppointmentResult(BaseModel):
     speech: str
 
 
+DeliveryStatus = Literal["recorded_only", "pending", "accepted", "uncertain", "failed"]
+ExternalBookingStatus = Literal["not_requested", "calendar_saved"]
+
+
+class ListedAppointment(Appointment):
+    external_booking_status: ExternalBookingStatus = "not_requested"
+
+
 class AppointmentList(BaseModel):
     person: Person
-    appointments: list[Appointment]
+    appointments: list[ListedAppointment]
     speech: str
 
 
 class NotifyResult(BaseModel):
     person: Person
     delivered_to: list[str] = Field(description="Confirmed delivery destinations; empty until delivery occurs")
+    submitted_to: list[str] = Field(default_factory=list, description="Addresses accepted by the email provider; not proof of delivery")
     candidate_channels: list[str] = Field(description="Saved contact channels; not delivery evidence")
-    delivery_status: Literal["recorded_only"] = "recorded_only"
+    delivery_status: DeliveryStatus = "recorded_only"
     urgency: Urgency
     message: str
     speech: str

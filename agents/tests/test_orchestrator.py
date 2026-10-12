@@ -61,7 +61,8 @@ def runtime(router=None, specialist=None):
 @pytest.mark.parametrize("operation, role", [
     ("get_medication_schedule", "MedGuardian"), ("log_dose", "MedGuardian"),
     ("query_memory", "MedGuardian"), ("book_appointment", "Appointments"),
-    ("list_appointments", "Appointments"),
+    ("list_appointments", "Appointments"), ("notify_family", "FamilyLoop"),
+    ("check_in", "Watch"),
 ])
 def test_real_strands_routes_to_specialist_and_records_exact_result(operation, role):
     care, models, roles = runtime()
@@ -240,6 +241,31 @@ def test_unreported_usage_is_unknown_not_zero_cost():
     assert usage[0]["model_calls_attempted"] == 1
     assert usage[0]["invocation_completed"] is False
     assert all(value is None for value in usage[0]["reported_tokens"].values())
+
+
+def test_audit_includes_evidence_and_feed_summary_without_speech_text():
+    care, _, _ = runtime()
+    record = Mock()
+    care.execute("check_in", {"person": "private-person"}, Mock(return_value={
+        "missed_doses_today": 1, "concerns": ["low supply"], "ok": False, "speech": "secret speech",
+    }), record)
+    outcome = record.call_args.args[0]
+    assert outcome["specialist"] == "Watch"
+    assert outcome["evidence"]["concern_count"] == 1
+    assert "secret speech" not in outcome["feed_summary"]
+    assert "notify_family" in outcome["feed_summary"]
+
+
+def test_familyloop_audit_marks_recorded_only_delivery():
+    care, _, _ = runtime()
+    record = Mock()
+    care.execute("notify_family", {}, Mock(return_value={
+        "urgency": "alert", "candidate_channels": ["sms:+1"], "speech": "Do not leak",
+    }), record)
+    outcome = record.call_args.args[0]
+    assert outcome["specialist"] == "FamilyLoop"
+    assert outcome["evidence"]["delivery_status"] == "recorded_only"
+    assert "recorded_only" in outcome["feed_summary"] or "delivery not sent" in outcome["feed_summary"]
 
 
 def test_broken_metrics_do_not_change_saved_result():
