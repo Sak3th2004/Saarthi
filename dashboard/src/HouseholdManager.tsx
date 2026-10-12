@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { householdManagementErrorMessage, type HouseholdChange, type HouseholdChangeReview, type HouseholdDirectory, type HouseholdManagementClient } from './householdManagementClient';
-import { describeAddMedication, parseScheduleSlots } from './medicationEntry';
+import { describeAddMedication, parseScheduleSlots, parseSupplyCount } from './medicationEntry';
 
 export function describeHouseholdChange(change: HouseholdChange, directory: HouseholdDirectory) {
   const name = (id: string) => directory.people.find(person => person.id === id)?.name ?? 'Selected person';
@@ -37,6 +37,7 @@ export function HouseholdManager({ client, onOpen, onChanged, disabled = false }
   const [email, setEmail] = useState('');
   const [dose, setDose] = useState('');
   const [scheduleText, setScheduleText] = useState('');
+  const [supplyText, setSupplyText] = useState('');
   const [selected, setSelected] = useState('');
   const lock = useRef(false);
   const mounted = useRef(true);
@@ -52,7 +53,7 @@ export function HouseholdManager({ client, onOpen, onChanged, disabled = false }
     setDirectory(result);
     setSelected(current => result.people.some(person => person.id === current) ? current : result.primary_person_id ?? result.people[0]?.id ?? '');
   }
-  function resetMedFields() { setName(''); setDose(''); setScheduleText(''); }
+  function resetMedFields() { setName(''); setDose(''); setScheduleText(''); setSupplyText(''); }
   async function refresh() {
     if (lock.current) return;
     lock.current = true; setBusy(true); setError(''); setReview(null); setNotice('');
@@ -69,10 +70,17 @@ export function HouseholdManager({ client, onOpen, onChanged, disabled = false }
       : kind === 'rename_person' ? { kind, person_id: personId, name: name.trim() }
       : kind === 'set_primary' ? { kind, person_id: personId }
       : kind === 'set_person_email' ? { kind, person_id: personId, email: email.trim() }
-      : kind === 'add_medication' ? {
-        kind, person_id: personId, name: name.trim(), dose: dose.trim(), schedule: parseScheduleSlots(scheduleText),
-      }
+      : kind === 'add_medication' ? (() => {
+        let supply: number | undefined;
+        try { supply = parseSupplyCount(supplyText); }
+        catch (err) { setError(err instanceof Error ? err.message : 'Remaining doses must be a whole number, or blank.'); return null; }
+        return {
+          kind, person_id: personId, name: name.trim(), dose: dose.trim(), schedule: parseScheduleSlots(scheduleText),
+          ...(supply !== undefined ? { supply_count: supply } : {}),
+        };
+      })()
       : { kind, from_person: personId, to_person: toPerson, relation: relation.trim() };
+    if (!change) return;
     if (change.kind === 'add_medication') {
       const typedSlots = scheduleText.split(/[,;|]+/).map(part => part.trim()).filter(Boolean);
       if (typedSlots.length !== change.schedule.length) {
@@ -154,6 +162,9 @@ export function HouseholdManager({ client, onOpen, onChanged, disabled = false }
             <label htmlFor="med-schedule">Schedule times (optional)</label>
             <input id="med-schedule" maxLength={200} value={scheduleText} autoComplete="off" placeholder="08:00, 20:00" onChange={event => { edited(); setScheduleText(event.target.value); }} aria-describedby="med-schedule-hint" />
             <p className="form-hint" id="med-schedule-hint">Use HH:MM on a 24-hour clock, separated by commas. Leave blank if the time is not recorded. Saves what you type — not medical advice.</p>
+            <label htmlFor="med-supply">Remaining doses (optional)</label>
+            <input id="med-supply" inputMode="numeric" maxLength={4} value={supplyText} autoComplete="off" placeholder="e.g. 30" onChange={event => { edited(); setSupplyText(event.target.value); }} aria-describedby="med-supply-hint" />
+            <p className="form-hint" id="med-supply-hint">Whole number of doses left, if your family tracks it. Leave blank if unknown. Taken doses reduce this count; 10 or fewer is flagged as low supply.</p>
           </>}
           {kind === 'set_person_email' && <><label htmlFor="person-email">Family notification email</label><input id="person-email" type="email" required maxLength={200} value={email} autoComplete="email" placeholder="name@example.com" onChange={event => { edited(); setEmail(event.target.value); }} /><p className="form-hint">Saved on this family member for reviewed notify delivery. Does not invent SES addresses or send mail by itself.</p></>}
           {kind === 'set_relationship' && <><label htmlFor="person-relation">Is … (relationship)</label><input id="person-relation" required maxLength={200} value={relation} placeholder="For example: elder son" onChange={event => { edited(); setRelation(event.target.value); }} /><label htmlFor="relation-to">Of this person</label><select id="relation-to" required value={toPerson} onChange={event => { edited(); setToPerson(event.target.value); }}><option value="">Choose a person</option>{directory.people.filter(person => person.id !== personId).map(person => <option key={person.id} value={person.id}>{person.name}</option>)}</select><p className="form-hint">This updates the relationship in this direction only.</p></>}

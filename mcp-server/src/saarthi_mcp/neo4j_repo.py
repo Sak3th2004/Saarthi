@@ -251,11 +251,12 @@ class Neo4jRepository:
                 tx.run(
                     "MATCH (p:Person {id:$id}) "
                     "CREATE (p)-[:TAKES]->(m:Medication) "
-                    "SET m.name=$name, m.dose=$dose, m.schedule=$schedule, m.supply_count=null",
+                    "SET m.name=$name, m.dose=$dose, m.schedule=$schedule, m.supply_count=$supply",
                     id=change["person_id"],
                     name=change["name"],
                     dose=change["dose"],
                     schedule=list(change["schedule"]),
+                    supply=change.get("supply_count"),
                 ).consume()
             if kind != "add_medication":
                 if after["primary_person_id"] is not None:
@@ -427,6 +428,7 @@ class Neo4jRepository:
         if dup and dup[0]["c"] > 0:
             return log, True
         detail = f"{med} {status.value} at {at.isoformat(timespec='minutes')}"
+        decrement = status is DoseStatus.taken
         self._write(
             """
             MATCH (p:Person {id:$id})
@@ -434,6 +436,10 @@ class Neo4jRepository:
             WITH p, d
             OPTIONAL MATCH (p)-[:TAKES]->(m:Medication) WHERE toLower(m.name) = toLower($med)
             FOREACH (_ IN CASE WHEN m IS NULL THEN [] ELSE [1] END | CREATE (d)-[:OF]->(m))
+            FOREACH (_ IN CASE WHEN $decrement AND m IS NOT NULL AND m.supply_count IS NOT NULL
+              THEN [1] ELSE [] END |
+              SET m.supply_count = CASE WHEN m.supply_count > 0 THEN m.supply_count - 1 ELSE 0 END
+            )
             CREATE (p)-[:EXPERIENCED]->(e:Event {type:'dose', detail:$detail, at:$at})
             """,
             id=person_id,
@@ -441,6 +447,7 @@ class Neo4jRepository:
             status=status.value,
             at=at,
             detail=detail,
+            decrement=decrement,
         )
         return log, False
 

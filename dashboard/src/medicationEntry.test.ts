@@ -44,11 +44,12 @@ describe('medication entry contract', () => {
 
   it('describes a pending add as a typed fact, not advice', () => {
     const line = describeAddMedication(
-      { kind: 'add_medication', person_id: 'elder-1', name: 'Entered name', dose: 'as written', schedule: ['08:00'] },
+      { kind: 'add_medication', person_id: 'elder-1', name: 'Entered name', dose: 'as written', schedule: ['08:00'], supply_count: 8 },
       'Entered older adult',
     );
     expect(line).toContain('Entered older adult');
     expect(line).toContain('Entered name');
+    expect(line).toContain('8 remaining');
     expect(line).toMatch(/not a prescription/i);
   });
 });

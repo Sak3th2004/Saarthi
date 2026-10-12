@@ -81,7 +81,10 @@ describe('household management response verification', () => {
       kind: 'add_medication', person_id: 'one', name: 'OwnerSuppliedMed', dose: '5mg', schedule: [],
     });
     expect(() => parseHouseholdChange({ kind: 'add_medication', person_id: 'one', name: 'OwnerSuppliedMed', dose: '5mg', schedule: ['25:00'] })).toThrow();
-    expect(() => parseHouseholdChange({ kind: 'add_medication', person_id: 'one', name: 'OwnerSuppliedMed', dose: '5mg', schedule: ['08:00'], supply_count: 1 })).toThrow();
+    expect(parseHouseholdChange({ kind: 'add_medication', person_id: 'one', name: 'OwnerSuppliedMed', dose: '5mg', schedule: ['08:00'], supply_count: 12 })).toEqual({
+      kind: 'add_medication', person_id: 'one', name: 'OwnerSuppliedMed', dose: '5mg', schedule: ['08:00'], supply_count: 12,
+    });
+    expect(() => parseHouseholdChange({ kind: 'add_medication', person_id: 'one', name: 'OwnerSuppliedMed', dose: '5mg', schedule: ['08:00'], supply_count: -1 })).toThrow();
     const medReview = parseHouseholdChangeReview({
       review_token: 'opaque-review', change: med, expires_in_seconds: 600, persistence: 'persistent', notice,
     }, med, 'persistent');

@@ -12,7 +12,7 @@ export type HouseholdChange =
   | { kind: 'set_relationship'; from_person: string; to_person: string; relation: string }
   | { kind: 'set_primary'; person_id: string }
   | { kind: 'set_person_email'; person_id: string; email: string }
-  | { kind: 'add_medication'; person_id: string; name: string; dose: string; schedule: string[] };
+  | { kind: 'add_medication'; person_id: string; name: string; dose: string; schedule: string[]; supply_count?: number | null };
 export interface HouseholdChangeReview {
   review_token: string; change: HouseholdChange; expires_in_seconds: 600; persistence: Persistence;
   notice?: string;
@@ -66,15 +66,27 @@ function scheduleSlots(value: unknown): string[] {
     return item;
   });
 }
+function optionalSupply(value: unknown): number | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 9999) return fail();
+  return value;
+}
 function medicationFact(value: unknown, expected: Extract<HouseholdChange, { kind: 'add_medication' }>) {
   const item = object(value);
-  exactKeys(item, ['person_id', 'name', 'dose', 'schedule']);
+  const keys = Object.keys(item);
+  if (!['person_id', 'name', 'dose', 'schedule'].every(key => keys.includes(key))) return fail();
+  if (keys.some(key => !['person_id', 'name', 'dose', 'schedule', 'supply_count'].includes(key))) return fail();
+  const supply = optionalSupply(item.supply_count);
   const fact = {
     person_id: id(item.person_id), name: label(item.name), dose: label(item.dose), schedule: scheduleSlots(item.schedule),
+    ...(supply !== undefined ? { supply_count: supply } : {}),
   };
-  if (JSON.stringify(fact) !== JSON.stringify({
+  const expectedFact = {
     person_id: expected.person_id, name: expected.name, dose: expected.dose, schedule: expected.schedule,
-  })) return fail();
+    ...(expected.supply_count !== undefined ? { supply_count: expected.supply_count } : {}),
+  };
+  if (JSON.stringify(fact) !== JSON.stringify(expectedFact)) return fail();
   return fact;
 }
 export function parseHouseholdDirectory(value: unknown): HouseholdDirectory {
@@ -122,12 +134,17 @@ export function parseHouseholdChange(value: unknown): HouseholdChange {
     case 'set_person_email':
       exactKeys(item, ['kind', 'person_id', 'email']);
       return { kind: item.kind, person_id: id(item.person_id), email: emailAddress(item.email) };
-    case 'add_medication':
-      exactKeys(item, ['kind', 'person_id', 'name', 'dose', 'schedule']);
+    case 'add_medication': {
+      const keys = Object.keys(item);
+      if (!['kind', 'person_id', 'name', 'dose', 'schedule'].every(key => keys.includes(key))) return fail();
+      if (keys.some(key => !['kind', 'person_id', 'name', 'dose', 'schedule', 'supply_count'].includes(key))) return fail();
+      const supply = optionalSupply(item.supply_count);
       return {
         kind: item.kind, person_id: id(item.person_id), name: label(item.name), dose: label(item.dose),
         schedule: scheduleSlots(item.schedule),
+        ...(supply !== undefined ? { supply_count: supply } : {}),
       };
+    }
     default: return fail();
   }
 }

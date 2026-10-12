@@ -253,7 +253,12 @@ class InMemoryRepository:
             elif kind == "add_medication":
                 self.add_medication(
                     change["person_id"],
-                    Medication(name=change["name"], dose=change["dose"], schedule=list(change["schedule"])),
+                    Medication(
+                        name=change["name"],
+                        dose=change["dose"],
+                        schedule=list(change["schedule"]),
+                        supply_count=change.get("supply_count"),
+                    ),
                 )
             if kind != "add_medication":
                 self._primary_elder_id = after["primary_person_id"]
@@ -361,6 +366,13 @@ class InMemoryRepository:
         log = DoseLog(med=med, status=status, at=at)
         if not already:
             existing.append(log)
+            if status is DoseStatus.taken:
+                meds = self._meds.get(person_id, [])
+                for index, item in enumerate(meds):
+                    if item.name.strip().casefold() == med.strip().casefold() and item.supply_count is not None:
+                        remaining = max(0, item.supply_count - 1)
+                        meds[index] = item.model_copy(update={"supply_count": remaining})
+                        break
             self.add_event(
                 person_id,
                 type="dose",

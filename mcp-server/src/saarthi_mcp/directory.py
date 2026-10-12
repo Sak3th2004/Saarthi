@@ -50,7 +50,17 @@ def validate_change(change: dict) -> dict:
         "add_medication": {"person_id", "name", "dose", "schedule"},
     }
     action = change.get("kind")
-    if not isinstance(action, str) or action not in fields or set(change) != fields[action] | {"kind"}:
+    if not isinstance(action, str) or action not in fields:
+        raise ValueError("Choose one supported household change with only its required fields.")
+    required = fields[action] | {"kind"}
+    extras = set(change) - required
+    # Optional caregiver-tracked remaining doses — never invented; omit if unknown.
+    if action == "add_medication":
+        if extras - {"supply_count"}:
+            raise ValueError("Choose one supported household change with only its required fields.")
+    elif extras:
+        raise ValueError("Choose one supported household change with only its required fields.")
+    if set(change) < required:
         raise ValueError("Choose one supported household change with only its required fields.")
     result = {"kind": action}
     for key in fields[action]:
@@ -83,6 +93,11 @@ def validate_change(change: dict) -> dict:
         elif len(value) > 200 or any(unicodedata.category(c).startswith("C") for c in value):
             raise ValueError("Names and relationships must be plain text of at most 200 characters.")
         result[key] = value
+    if action == "add_medication" and "supply_count" in change:
+        supply = change["supply_count"]
+        if supply is not None and (type(supply) is not int or not 0 <= supply <= 9999):
+            raise ValueError("Remaining doses must be a whole number from 0 to 9999, or omitted.")
+        result["supply_count"] = supply
     return result
 
 
@@ -140,13 +155,15 @@ def preview_change(directory: dict, change: dict) -> dict:
 
 
 def medication_fact(change: dict) -> dict:
-    """Normalized caregiver-saved medication payload (no supply or advice fields)."""
-    return {
+    """Normalized caregiver-saved medication payload (supply optional; never advice)."""
+    fact = {
         "person_id": change["person_id"],
         "name": change["name"],
         "dose": change["dose"],
         "schedule": list(change["schedule"]),
+        "supply_count": change.get("supply_count"),
     }
+    return fact
 
 
 def change_audit(before: dict, after: dict, change: dict) -> tuple[list[str], str]:

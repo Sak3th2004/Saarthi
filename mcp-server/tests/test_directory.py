@@ -86,7 +86,8 @@ def test_invalid_changes_leave_directory_and_audit_untouched(change):
     {"kind": "rename_person", "person_id": "x", "name": True},
     {"kind": "add_person", "id": "x y", "name": "Name", "role": "elder"},
     {"kind": "add_person", "id": "x", "name": "Name", "role": "doctor"},
-    {"kind": "add_medication", "person_id": "x", "name": "Med", "dose": "1mg", "schedule": ["08:00"], "supply_count": 1},
+    {"kind": "add_medication", "person_id": "x", "name": "Med", "dose": "1mg", "schedule": ["08:00"], "supply_count": -1},
+    {"kind": "add_medication", "person_id": "x", "name": "Med", "dose": "1mg", "schedule": ["08:00"], "extra": True},
     {"kind": "add_medication", "person_id": "x", "name": "Med", "dose": "1mg", "schedule": "08:00"},
     {"kind": "add_medication", "person_id": "x", "name": "Med", "dose": "1mg", "schedule": ["25:00"]},
     {"kind": "add_medication", "person_id": "x", "name": "Med", "dose": "1mg", "schedule": ["8:00"]},
@@ -128,6 +129,7 @@ def test_add_medication_saves_caregiver_fact_without_changing_directory_revision
     assert med_audits[0]["before"] is None
     assert med_audits[0]["after"] == {
         "person_id": "parent", "name": "ExampleMed", "dose": "10mg", "schedule": ["08:00", "20:00"],
+        "supply_count": None,
     }
     assert repo._directory_audits[-1]["actor"] == "caregiver-sub"
     assert json.loads(repo._directory_audits[-1]["detail"])["kind"] == "add_medication"
@@ -148,6 +150,30 @@ def test_add_medication_saves_caregiver_fact_without_changing_directory_revision
             "dose": "1mg",
             "schedule": [],
         })
+
+
+def test_add_medication_with_supply_decrements_on_taken_dose():
+    from datetime import datetime, timezone
+
+    from saarthi_mcp.models import DoseStatus
+
+    repo = InMemoryRepository()
+    apply(repo, {"kind": "add_person", "id": "parent", "name": "Parent", "role": "elder"})
+    apply(repo, {
+        "kind": "add_medication",
+        "person_id": "parent",
+        "name": "TrackedMed",
+        "dose": "5mg",
+        "schedule": ["08:00"],
+        "supply_count": 12,
+    })
+    assert repo.medications_for("parent")[0].supply_count == 12
+    at = datetime(2026, 10, 12, 8, 5, tzinfo=timezone.utc)
+    _, already = repo.add_dose("parent", "TrackedMed", DoseStatus.taken, at)
+    assert already is False
+    assert repo.medications_for("parent")[0].supply_count == 11
+    repo.add_dose("parent", "TrackedMed", DoseStatus.missed, datetime(2026, 10, 12, 20, 0, tzinfo=timezone.utc))
+    assert repo.medications_for("parent")[0].supply_count == 11
 
 
 def test_revision_is_stable_under_order_changes_but_protects_concurrent_edits():
