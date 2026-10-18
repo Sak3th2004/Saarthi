@@ -66,7 +66,7 @@ export function HouseholdManager({ client, onOpen, onChanged, disabled = false }
   async function prepare(event: FormEvent) {
     event.preventDefault();
     if (!directory || lock.current) return;
-    const change: HouseholdChange = kind === 'add_person' ? { kind, id: crypto.randomUUID(), name: name.trim(), role }
+    const change: HouseholdChange | null = kind === 'add_person' ? { kind, id: crypto.randomUUID(), name: name.trim(), role }
       : kind === 'rename_person' ? { kind, person_id: personId, name: name.trim() }
       : kind === 'set_primary' ? { kind, person_id: personId }
       : kind === 'set_person_email' ? { kind, person_id: personId, email: email.trim() }
