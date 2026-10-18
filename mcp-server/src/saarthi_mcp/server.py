@@ -400,7 +400,9 @@ def build_server(repo: HouseholdRepository | None = None, orchestrator=None) -> 
             for d in repo.dose_logs(p.id, since=today_start)
             if d.status is DoseStatus.missed and ensure_aware(d.at) <= current
         )
-        recent = repo.recent_events(p.id, limit=1)
+        recent = repo.recent_events(
+            p.id, limit=1, excluded_types=("agent_action", "household_setup", "notify"), until=current,
+        )
         last_activity = recent[0].at if recent else None
 
         concerns: list[str] = []

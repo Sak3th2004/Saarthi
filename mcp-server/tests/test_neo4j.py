@@ -103,6 +103,22 @@ def test_upcoming_appointments_sorted(repo):
     assert whens == sorted(whens)
 
 
+def test_event_filters_apply_before_limit(repo):
+    person_id = "event-filter-regression"
+    repo._write("CREATE (:Person {id:$id, name:'Filter test', role:'elder'})", id=person_id)
+    now = datetime.now(timezone.utc)
+    repo.add_event(person_id, "note", "Keep this care record", now - timedelta(hours=1))
+    for i in range(55):
+        repo.add_event(person_id, "agent_action", "Internal read", now - timedelta(seconds=i))
+    repo.add_event(person_id, "note", "Not yet", now + timedelta(days=1))
+    repo.add_event(person_id, "note", "Outside window", now - timedelta(days=8))
+    events = repo.recent_events(
+        person_id, limit=1, excluded_types=("agent_action",),
+        since=now - timedelta(days=7), until=now,
+    )
+    assert [e.detail for e in events] == ["Keep this care record"]
+
+
 def test_new_appointment_records_history_without_claiming_provider_booking(repo):
     when = datetime.now(timezone.utc) + timedelta(days=4)
     appt = repo.add_appointment("elder-1", "Audit calendar entry", when)

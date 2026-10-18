@@ -349,11 +349,21 @@ class Neo4jRepository:
         )
         return [self._appointment(r["a"]) for r in recs]
 
-    def recent_events(self, person_id: str, limit: int = 10) -> list[Event]:
+    def recent_events(self, person_id: str, limit: int = 10, *, excluded_types: tuple[str, ...] = (),
+                      since: datetime | None = None, until: datetime | None = None) -> list[Event]:
         recs = self._read(
-            "MATCH (:Person {id:$id})-[:EXPERIENCED]->(e:Event) RETURN e ORDER BY e.at DESC LIMIT $limit",
+            """
+            MATCH (:Person {id:$id})-[:EXPERIENCED]->(e:Event)
+            WHERE NOT e.type IN $excluded
+              AND ($since IS NULL OR e.at >= $since)
+              AND ($until IS NULL OR e.at <= $until)
+            RETURN e ORDER BY e.at DESC LIMIT $limit
+            """,
             id=person_id,
             limit=limit,
+            excluded=list(excluded_types),
+            since=ensure_aware(since) if since is not None else None,
+            until=ensure_aware(until) if until is not None else None,
         )
         return [self._event(r["e"]) for r in recs]
 

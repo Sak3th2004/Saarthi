@@ -99,7 +99,8 @@ class HouseholdRepository(Protocol):
     def relationships_for(self, person_id: str, limit: int = 30) -> list[FamilyRelationship]: ...
     def medications_for(self, person_id: str) -> list[Medication]: ...
     def upcoming_appointments(self, person_id: str, limit: int = 5) -> list[Appointment]: ...
-    def recent_events(self, person_id: str, limit: int = 10) -> list[Event]: ...
+    def recent_events(self, person_id: str, limit: int = 10, *, excluded_types: tuple[str, ...] = (),
+                      since: datetime | None = None, until: datetime | None = None) -> list[Event]: ...
     def search_events(self, person_id: str, question: str, limit: int = 50) -> list[Event]: ...
     def dose_logs(self, person_id: str, since: datetime | None = None) -> list[DoseLog]: ...
     def adherence(self, person_id: str, days: int = 7) -> float | None: ...
@@ -320,9 +321,17 @@ class InMemoryRepository:
         upcoming.sort(key=lambda a: ensure_aware(a.when))
         return upcoming[:limit]
 
-    def recent_events(self, person_id: str, limit: int = 10) -> list[Event]:
+    def recent_events(self, person_id: str, limit: int = 10, *, excluded_types: tuple[str, ...] = (),
+                      since: datetime | None = None, until: datetime | None = None) -> list[Event]:
+        # Filter before limiting: internal reads must not displace caregiver records.
+        since = ensure_aware(since) if since is not None else None
+        until = ensure_aware(until) if until is not None else None
         events = sorted(
-            self._events.get(person_id, []), key=lambda e: ensure_aware(e.at), reverse=True
+            (e for e in self._events.get(person_id, [])
+             if e.type not in excluded_types
+             and (since is None or ensure_aware(e.at) >= since)
+             and (until is None or ensure_aware(e.at) <= until)),
+            key=lambda e: ensure_aware(e.at), reverse=True,
         )
         return events[:limit]
 

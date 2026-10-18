@@ -47,3 +47,37 @@ def test_digest_review_confirm_uses_digest_subject():
     result = service.confirm(preview["review_token"], confirmed=True)
     assert result.delivery_status == "accepted"
     assert client.send_email.call_args.kwargs["Message"]["Subject"]["Data"] == "Saarthi weekly digest · Ravi"
+
+
+def test_long_records_still_produce_a_reviewable_digest():
+    repo = _household()
+    for i in range(25):
+        repo.add_event("parent-1", "note", f"Note {i}: " + "n" * 4000, now_utc())
+    preview = FamilyNotificationService(repo).review_weekly_digest("parent-1")
+    assert len(preview["message"]) <= 8000
+    assert "shortened or omitted" in preview["message"]
+    assert "not medical advice" in preview["message"]
+
+
+def test_internal_traffic_and_previous_digests_do_not_displace_care_notes():
+    repo = _household()
+    now = now_utc()
+    repo.add_event("parent-1", "note", "Physio returned the call", now - timedelta(hours=2))
+    for i in range(60):
+        repo.add_event("parent-1", "agent_action", "Internal audit", now - timedelta(minutes=1))
+        repo.add_event("parent-1", "notify", "Previous digest and provider metadata", now)
+    repo.add_event("parent-1", "note", "Future note", now + timedelta(days=1))
+    repo.add_event("parent-1", "note", "Old note", now - timedelta(days=8))
+    body = build_weekly_digest(repo, "parent-1")
+    assert "Physio returned the call" in body
+    for excluded in ("Internal audit", "Previous digest", "Future note", "Old note"):
+        assert excluded not in body
+
+
+def test_confirmed_digest_is_not_nested_in_next_digest():
+    repo = _household()
+    service = FamilyNotificationService(repo)
+    first = service.review_weekly_digest("parent-1")
+    service.confirm(first["review_token"], confirmed=True)
+    second = service.review_weekly_digest("parent-1")
+    assert second["message"] == first["message"]

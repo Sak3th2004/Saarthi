@@ -44,6 +44,50 @@ def test_activity_stale_respects_grace_and_window():
     assert policy.activity_stale(None, instant=datetime(2026, 10, 12, 22, 0, tzinfo=IST)) is False
 
 
+def test_overnight_window_uses_previous_evening_after_midnight():
+    policy = WatchPolicy(window_start="21:00", window_end="06:00")
+    night = datetime(2026, 10, 13, 2, 0, tzinfo=IST)
+    assert policy.activity_stale(None, instant=night) is True
+    assert policy.activity_stale(datetime(2026, 10, 12, 22, 0, tzinfo=IST), instant=night) is False
+    assert policy.activity_stale(datetime(2026, 10, 12, 20, 0, tzinfo=IST), instant=night) is True
+    assert policy.activity_stale(None, instant=datetime(2026, 10, 12, 22, 0, tzinfo=IST)) is False
+    assert policy.activity_stale(None, instant=datetime(2026, 10, 13, 7, 0, tzinfo=IST)) is False
+
+
+async def test_checking_watch_does_not_clear_missing_care_activity(monkeypatch):
+    from datetime import timedelta, timezone
+    from fastmcp import Client
+    from saarthi_mcp.models import Person, Role
+    from saarthi_mcp.repository import InMemoryRepository
+    from saarthi_mcp.server import build_server
+
+    monkeypatch.setenv("SAARTHI_AGENTS", "off")
+    monkeypatch.setenv("SAARTHI_AUTH", "local")
+    fixed = datetime(2026, 10, 12, 5, 30, tzinfo=timezone.utc)
+    monkeypatch.setattr("saarthi_mcp.server.now_utc", lambda: fixed)
+    repo = InMemoryRepository()
+    repo.add_person(Person(id="p", name="Parent", role=Role.elder))
+    for kind in ("household_setup", "notify"):
+        repo.add_event("p", kind, "Internal record", fixed)
+    repo.add_event("p", "note", "Future record", fixed + timedelta(days=1))
+
+    class AuditingOrchestrator:
+        def execute(self, *, operation, arguments, action, record):
+            result = action()
+            record({"operation": operation, "status": "completed"})
+            return result
+
+    async with Client(build_server(repo, orchestrator=AuditingOrchestrator())) as client:
+        for _ in range(2):
+            result = (await client.call_tool("check_in", {"person": "p"})).data
+            assert result["last_activity"] is None
+            assert any("no saved activity" in item for item in result["concerns"])
+        repo.add_event("p", "note", "Family visit recorded", fixed)
+        result = (await client.call_tool("check_in", {"person": "p"})).data
+        assert result["concerns"] == []
+        assert result["ok"] is None  # Records never prove wellbeing.
+
+
 async def test_check_in_flags_stale_activity_after_grace(monkeypatch):
     from datetime import timezone
 

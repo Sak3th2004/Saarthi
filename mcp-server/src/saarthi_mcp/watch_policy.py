@@ -71,6 +71,8 @@ class WatchPolicy:
             return False
         start = self._parse_clock(self.window_start)
         window_open = datetime.combine(local.date(), start, tzinfo=self.zone())
+        if start > self._parse_clock(self.window_end) and local < window_open:
+            window_open -= timedelta(days=1)
         if local < window_open + timedelta(hours=self.grace_hours):
             return False
         if last_activity is None:
