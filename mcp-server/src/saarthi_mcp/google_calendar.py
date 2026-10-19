@@ -31,12 +31,15 @@ class CalendarConfig:
     client_secret: str = field(repr=False)
     account: str
     redirect_uri: str
+    hosted: bool = False
 
     def __post_init__(self):
         uri = urlsplit(self.redirect_uri)
-        if (uri.scheme != "http" or uri.hostname != "127.0.0.1" or uri.port != 8080
-                or uri.path != "/oauth/google/callback" or uri.query or uri.fragment or uri.username):
-            raise ValueError("Calendar currently requires the configured loopback callback on port 8080.")
+        local = uri.scheme == "http" and uri.hostname == "127.0.0.1" and uri.port == 8080
+        remote = uri.scheme == "https" and bool(uri.hostname) and uri.port in (None, 443)
+        if (not (remote if self.hosted else local) or uri.path != "/oauth/google/callback"
+                or uri.query or uri.fragment or uri.username or uri.password):
+            raise ValueError("Calendar requires an exact HTTPS hosted callback or the configured local callback.")
         if not self.client_id.endswith(".apps.googleusercontent.com") or not self.client_secret or "@" not in self.account:
             raise ValueError("Calendar client ID, client secret and account must be configured.")
 
@@ -261,19 +264,36 @@ def configured_calendar(settings, *, authenticated: bool = False, subject: str |
     from pathlib import Path
     from dotenv import dotenv_values
     from saarthi_mcp.calendar_tokens import LocalTokenStore, SubjectTokenStore
+    mode = os.getenv("SAARTHI_GOOGLE_MODE", "local")
+    if mode not in {"local", "hosted"}:
+        raise ValueError("SAARTHI_GOOGLE_MODE must be local or hosted.")
+    if mode == "hosted":
+        if not authenticated or settings.cognito is None:
+            raise ValueError("Hosted Calendar requires Cognito household authentication.")
+        from saarthi_mcp.cloud_calendar_tokens import SecretsManagerTokenStore
+        origin = urlsplit(settings.cognito.resource_url)
+        callback = os.getenv("GOOGLE_REDIRECT_URI", "")
+        if callback != f"https://{origin.netloc}/oauth/google/callback" or origin.scheme != "https":
+            raise ValueError("Hosted Calendar callback must share the authenticated dashboard's HTTPS origin.")
+        config = CalendarConfig(
+            client_id=os.getenv("GOOGLE_CLIENT_ID", ""), client_secret=os.getenv("GOOGLE_CLIENT_SECRET", ""),
+            account=os.getenv("GOOGLE_CALENDAR_ACCOUNT", ""), redirect_uri=callback, hosted=True,
+        )
+        store = SecretsManagerTokenStore(os.getenv("SAARTHI_GOOGLE_TOKEN_PREFIX", ""), settings.aws_region)
+        return CalendarConnection(config, store, subject=subject)
     path = os.getenv("SAARTHI_GOOGLE_CONFIG")
     if not path or not str(path).strip():
         return None
     if settings.host != "127.0.0.1" or settings.port != 8080:
         raise ValueError("Local Calendar setup requires a loopback server on port 8080.")
-    if os.name != "nt":
-        raise ValueError("Local Calendar token protection currently requires Windows.")
     config_path = Path(path.strip()).resolve()
     if not config_path.is_file():
         raise ValueError(
             f"SAARTHI_GOOGLE_CONFIG points to a missing file: {config_path}. "
             "Create the Google Calendar env file or clear SAARTHI_GOOGLE_CONFIG."
         )
+    if os.name != "nt":
+        raise ValueError("Local Calendar token protection currently requires Windows.")
     values = dotenv_values(config_path)
     config = CalendarConfig(client_id=values.get("GOOGLE_CLIENT_ID", ""),
         client_secret=values.get("GOOGLE_CLIENT_SECRET", ""), account=values.get("GOOGLE_CALENDAR_ACCOUNT", ""),
@@ -303,6 +323,18 @@ def attach_authenticated_calendar_routes(server, connection, verifier, resource_
     handoffs: dict[str, tuple[float, str]] = {}
     handoff_lock = threading.Lock()
     handoff_path = "/oauth/google/household-connect"
+    callback_uri = urlsplit(connection.config.redirect_uri)
+    callback_origin = f"{callback_uri.scheme}://{callback_uri.netloc}"
+    if connection.config.hosted and callback_origin != allowed_origin:
+        raise ValueError("Hosted Calendar must use the authenticated dashboard origin.")
+
+    def callback_host_allowed(request):
+        if connection.config.hosted:
+            # HTTPS terminates at the configured hosting proxy. Never trust a supplied
+            # X-Forwarded-Host to choose where credentials or handoffs are sent.
+            return request.headers.get("host") == callback_uri.netloc
+        return (request.client is not None and request.client.host == "127.0.0.1"
+                and request.headers.get("host") == "127.0.0.1:8080")
 
     async def identity_from(request):
         authorization = request.headers.getlist("authorization")
@@ -336,7 +368,7 @@ def attach_authenticated_calendar_routes(server, connection, verifier, resource_
             if len(handoffs) >= 20:
                 raise ValueError("Too many connection attempts. Please wait ten minutes.")
             handoffs[token] = (now + 600, subject)
-        return f"http://127.0.0.1:8080{handoff_path}?h={token}"
+        return f"{callback_origin}{handoff_path}?h={token}"
 
     def consume_handoff(token: str | None) -> str:
         if not token or not isinstance(token, str) or len(token) > 256:
@@ -372,7 +404,7 @@ def attach_authenticated_calendar_routes(server, connection, verifier, resource_
     @server.custom_route(handoff_path, methods=["GET"])
     async def household_connect_handoff(request):
         # Document navigation on the MCP loopback host sets the OAuth cookie for the callback.
-        if request.client is None or request.client.host != "127.0.0.1" or request.headers.get("host") != "127.0.0.1:8080":
+        if not callback_host_allowed(request):
             return HTMLResponse("Local access required.", status_code=403, headers=headers)
         try:
             q = request.query_params
@@ -381,7 +413,8 @@ def attach_authenticated_calendar_routes(server, connection, verifier, resource_
             subject = await run_in_threadpool(consume_handoff, q.get("h"))
             url, browser = await run_in_threadpool(connection.start, subject=subject)
             response = RedirectResponse(url, status_code=303, headers=headers)
-            response.set_cookie(COOKIE, browser, max_age=600, httponly=True, samesite="lax", path="/oauth/google")
+            response.set_cookie(COOKIE, browser, max_age=600, httponly=True, secure=connection.config.hosted,
+                                samesite="lax", path="/oauth/google")
             return response
         except ValueError as exc:
             return HTMLResponse(escape(str(exc)), status_code=400, headers=headers)
@@ -400,7 +433,7 @@ def attach_authenticated_calendar_routes(server, connection, verifier, resource_
 
     @server.custom_route("/oauth/google/callback", methods=["GET"])
     async def callback_authenticated(request):
-        if request.client is None or request.client.host != "127.0.0.1" or request.headers.get("host") != "127.0.0.1:8080":
+        if not callback_host_allowed(request):
             return HTMLResponse("Local access required.", status_code=403, headers=headers)
         try:
             q = request.query_params

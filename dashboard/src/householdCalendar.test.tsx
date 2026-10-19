@@ -10,12 +10,24 @@ import {
   parseAppointmentReview,
   parseAppointmentSaved,
   parseCalendarEvents,
+  verifiedCalendarHandoff,
 } from './householdCalendarClient';
 
 const eventsPayload = () => ({
   source: 'google_calendar' as const,
   events: [{ id: 'evt-1', summary: 'Physio', start: { dateTime: '2026-10-11T10:00:00+05:30' }, end: { dateTime: '2026-10-11T11:00:00+05:30' }, status: 'confirmed' }],
   more_available: false,
+});
+
+describe('hosted calendar handoff', () => {
+  it('accepts only the hosted dashboard origin', () => {
+    const link = 'https://notebook.example/oauth/google/household-connect?h=opaque-token';
+    expect(verifiedCalendarHandoff(link, 'https://notebook.example')).toBe(link);
+    for (const bad of [link.replace('notebook.example', 'attacker.example'),
+      'http://127.0.0.1:8080/oauth/google/household-connect?h=token', link + '&extra=1', link + '#fragment']) {
+      expect(() => verifiedCalendarHandoff(bad, 'https://notebook.example')).toThrow();
+    }
+  });
 });
 
 const reviewPayload = () => ({

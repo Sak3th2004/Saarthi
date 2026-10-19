@@ -40,6 +40,7 @@ def main() -> int:
     env["SAARTHI_HOUSEHOLD_FILE"] = ""
     env["SAARTHI_LOCAL_SETUP"] = "0"
     env["SAARTHI_GOOGLE_CONFIG"] = ""
+    env["SAARTHI_GOOGLE_MODE"] = "local"
     env["SAARTHI_RUN_SES_TESTS"] = "0"
     env["SAARTHI_AUTH"] = "local"
     env["SAARTHI_HOST"] = "127.0.0.1"

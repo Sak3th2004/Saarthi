@@ -1,0 +1,101 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Saarthi single-origin notebook. One container maximum; existing Cognito, Neo4j, Google and SES identities are required. No users or credentials are created.",
+  "Parameters": {
+    "ImageUri": {"Type": "String", "Description": "Immutable ECR image digest URI"},
+    "PublicOrigin": {"Type": "String", "AllowedPattern": "https://[A-Za-z0-9.-]+", "Description": "Service HTTPS origin; configure Cognito and Google callbacks for this origin"},
+    "UserPoolId": {"Type": "String"},
+    "ClientId": {"Type": "String"},
+    "LoginDomain": {"Type": "String", "AllowedPattern": "https://[a-z0-9-]+\\.auth\\.[a-z0-9-]+\\.amazoncognito\\.com"},
+    "AllowedSubjects": {"Type": "String", "Description": "Comma-separated approved Cognito subject UUIDs"},
+    "Neo4jUri": {"Type": "String", "AllowedPattern": "neo4j\\+s://[A-Za-z0-9.-]+"},
+    "Neo4jUsername": {"Type": "String", "Default": "neo4j"},
+    "Neo4jDatabase": {"Type": "String", "Default": "neo4j"},
+    "Neo4jPasswordSecretArn": {"Type": "String", "Description": "SecretString is the database password only"},
+    "GoogleClientId": {"Type": "String"},
+    "GoogleClientSecretArn": {"Type": "String", "Description": "SecretString is the Google client secret only"},
+    "GoogleCalendarAccount": {"Type": "String", "Description": "Explicitly approved account for this deployment's calendar"},
+    "SesSenderEmail": {"Type": "String", "Description": "Verified sender; sandbox recipients must also be verified"},
+    "BedrockModelId": {"Type": "String", "Default": "us.amazon.nova-pro-v1:0", "AllowedValues": ["us.amazon.nova-pro-v1:0"]}
+  },
+  "Resources": {
+    "ImageAccessRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": {"Service": "build.apprunner.amazonaws.com"}, "Action": "sts:AssumeRole"}]},
+        "ManagedPolicyArns": [{"Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess"}]
+      }
+    },
+    "RuntimeRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": {"Service": "tasks.apprunner.amazonaws.com"}, "Action": "sts:AssumeRole"}]},
+        "Policies": [{"PolicyName": "NotebookServices", "PolicyDocument": {
+          "Version": "2012-10-17", "Statement": [
+            {"Effect": "Allow", "Action": ["secretsmanager:GetSecretValue"], "Resource": [{"Ref": "Neo4jPasswordSecretArn"}, {"Ref": "GoogleClientSecretArn"}]},
+            {"Effect": "Allow", "Action": ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue", "secretsmanager:CreateSecret", "secretsmanager:TagResource"], "Resource": {"Fn::Sub": "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:saarthi/${AWS::StackName}/calendar/*"}},
+            {"Effect": "Allow", "Action": ["ses:SendEmail"], "Resource": {"Fn::Sub": "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SesSenderEmail}"}, "Condition": {"StringEquals": {"ses:FromAddress": {"Ref": "SesSenderEmail"}}}},
+            {"Effect": "Allow", "Action": ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"], "Resource": [
+              {"Fn::Sub": "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.amazon.nova-pro-v1:0"},
+              {"Fn::Sub": "arn:${AWS::Partition}:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0"},
+              {"Fn::Sub": "arn:${AWS::Partition}:bedrock:us-east-2::foundation-model/amazon.nova-pro-v1:0"},
+              {"Fn::Sub": "arn:${AWS::Partition}:bedrock:us-west-2::foundation-model/amazon.nova-pro-v1:0"}
+            ]}
+          ]
+        }}]
+      }
+    },
+    "Scaling": {
+      "Type": "AWS::AppRunner::AutoScalingConfiguration",
+      "Properties": {"MinSize": 1, "MaxSize": 1, "MaxConcurrency": 20}
+    },
+    "Notebook": {
+      "Type": "AWS::AppRunner::Service",
+      "Properties": {
+        "SourceConfiguration": {
+          "AuthenticationConfiguration": {"AccessRoleArn": {"Fn::GetAtt": ["ImageAccessRole", "Arn"]}},
+          "AutoDeploymentsEnabled": false,
+          "ImageRepository": {
+            "ImageIdentifier": {"Ref": "ImageUri"}, "ImageRepositoryType": "ECR",
+            "ImageConfiguration": {
+              "Port": "8080",
+              "RuntimeEnvironmentVariables": [
+                {"Name": "SAARTHI_AUTH", "Value": "cognito"},
+                {"Name": "SAARTHI_BACKEND", "Value": "neo4j"},
+                {"Name": "SAARTHI_AGENTS", "Value": "bedrock"},
+                {"Name": "AWS_REGION", "Value": {"Ref": "AWS::Region"}},
+                {"Name": "BEDROCK_MODEL_ID", "Value": {"Ref": "BedrockModelId"}},
+                {"Name": "COGNITO_USER_POOL_ID", "Value": {"Ref": "UserPoolId"}},
+                {"Name": "COGNITO_CLIENT_ID", "Value": {"Ref": "ClientId"}},
+                {"Name": "COGNITO_LOGIN_DOMAIN", "Value": {"Ref": "LoginDomain"}},
+                {"Name": "COGNITO_ALLOWED_SUBJECTS", "Value": {"Ref": "AllowedSubjects"}},
+                {"Name": "COGNITO_RESOURCE_URL", "Value": {"Fn::Sub": "${PublicOrigin}/mcp"}},
+                {"Name": "NEO4J_URI", "Value": {"Ref": "Neo4jUri"}},
+                {"Name": "NEO4J_USERNAME", "Value": {"Ref": "Neo4jUsername"}},
+                {"Name": "NEO4J_DATABASE", "Value": {"Ref": "Neo4jDatabase"}},
+                {"Name": "SAARTHI_GOOGLE_MODE", "Value": "hosted"},
+                {"Name": "SAARTHI_GOOGLE_TOKEN_PREFIX", "Value": {"Fn::Sub": "saarthi/${AWS::StackName}/calendar"}},
+                {"Name": "GOOGLE_CLIENT_ID", "Value": {"Ref": "GoogleClientId"}},
+                {"Name": "GOOGLE_CALENDAR_ACCOUNT", "Value": {"Ref": "GoogleCalendarAccount"}},
+                {"Name": "GOOGLE_REDIRECT_URI", "Value": {"Fn::Sub": "${PublicOrigin}/oauth/google/callback"}},
+                {"Name": "SES_SENDER_EMAIL", "Value": {"Ref": "SesSenderEmail"}}
+              ],
+              "RuntimeEnvironmentSecrets": [
+                {"Name": "NEO4J_PASSWORD", "Value": {"Ref": "Neo4jPasswordSecretArn"}},
+                {"Name": "GOOGLE_CLIENT_SECRET", "Value": {"Ref": "GoogleClientSecretArn"}}
+              ]
+            }
+          }
+        },
+        "InstanceConfiguration": {"Cpu": "0.25 vCPU", "Memory": "1 GB", "InstanceRoleArn": {"Fn::GetAtt": ["RuntimeRole", "Arn"]}},
+        "AutoScalingConfigurationArn": {"Fn::GetAtt": ["Scaling", "AutoScalingConfigurationArn"]},
+        "HealthCheckConfiguration": {"Protocol": "HTTP", "Path": "/health", "Interval": 10, "Timeout": 5, "HealthyThreshold": 1, "UnhealthyThreshold": 5},
+        "Tags": [{"Key": "project", "Value": "saarthi"}]
+      }
+    }
+  },
+  "Outputs": {
+    "ServiceUrl": {"Value": {"Fn::GetAtt": ["Notebook", "ServiceUrl"]}},
+    "ServiceArn": {"Value": {"Fn::GetAtt": ["Notebook", "ServiceArn"]}}
+  }
+}

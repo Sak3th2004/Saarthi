@@ -2,6 +2,10 @@
   "AWSTemplateFormatVersion": "2010-09-09",
   "Description": "Saarthi household sign-in. No app hosting, IAM roles, users, invitations or SMS resources. Optional ProductionDashboardOrigin adds a second callback and resource server without removing localhost.",
   "Parameters": {
+    "MfaPolicy": {
+      "Type": "String", "Default": "ON", "AllowedValues": ["ON", "OPTIONAL"],
+      "Description": "Keep ON for family accounts. OPTIONAL is available for a separate reviewer pool; existing enrolled users still use their MFA."
+    },
     "DomainPrefix": {"Type": "String", "AllowedPattern": "[a-z0-9][a-z0-9-]{1,60}[a-z0-9]"},
     "DashboardOrigin": {"Type": "String", "Default": "http://localhost:5173", "AllowedPattern": "https://[A-Za-z0-9.-]+(:[0-9]+)?|http://localhost:[0-9]+"},
     "ProductionDashboardOrigin": {
@@ -27,7 +31,7 @@
         "UsernameAttributes": ["email"],
         "UsernameConfiguration": {"CaseSensitive": false},
         "AutoVerifiedAttributes": ["email"],
-        "MfaConfiguration": "ON",
+        "MfaConfiguration": {"Ref": "MfaPolicy"},
         "EnabledMfas": ["SOFTWARE_TOKEN_MFA"],
         "AccountRecoverySetting": {"RecoveryMechanisms": [{"Name": "verified_email", "Priority": 1}]},
         "Policies": {"PasswordPolicy": {"MinimumLength": 12, "RequireLowercase": true, "RequireUppercase": true, "RequireNumbers": true, "RequireSymbols": true, "TemporaryPasswordValidityDays": 7}},

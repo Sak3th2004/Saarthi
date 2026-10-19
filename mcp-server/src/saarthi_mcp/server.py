@@ -477,5 +477,9 @@ def run() -> None:
         attach_calendar_routes(server, calendar)
         from saarthi_mcp.calendar_appointments import CalendarAppointments, attach_appointment_routes
         attach_appointment_routes(server, CalendarAppointments(calendar, repository))
+    import os
+    if directory := os.getenv("SAARTHI_DASHBOARD_DIR"):
+        from saarthi_mcp.web_host import attach_web_host
+        attach_web_host(server, settings, directory, login_domain=os.getenv("COGNITO_LOGIN_DOMAIN", ""))
     server.run(transport="http", host=settings.host, port=settings.port, path=settings.path,
                uvicorn_config={"access_log": False})

@@ -12,6 +12,13 @@ def _load_template():
     return json.loads((Path(__file__).resolve().parents[2] / "infra/cognito.json").read_text())
 
 
+def test_family_mfa_stays_required_unless_explicitly_configured():
+    template = _load_template()
+    assert template['Parameters']['MfaPolicy']['Default'] == 'ON'
+    assert template['Parameters']['MfaPolicy']['AllowedValues'] == ['ON', 'OPTIONAL']
+    assert template['Resources']['HouseholdPool']['Properties']['MfaConfiguration'] == {'Ref': 'MfaPolicy'}
+
+
 def _resolve(value, values):
     if isinstance(value, str):
         return value

@@ -7,11 +7,11 @@ import { createHouseholdManagementClient } from './householdManagementClient';
 import { createHouseholdCalendarClient } from './householdCalendarClient';
 import { createHouseholdNotifyClient } from './householdNotifyClient';
 
-export function AuthGate() {
+export function AuthGate({ environment = import.meta.env }: { environment?: Record<string, string | undefined> }) {
   const configuration = useMemo(() => {
-    try { return { config: authConfig(import.meta.env, window.location.origin), error: '' }; }
+    try { return { config: authConfig(environment, window.location.origin), error: '' }; }
     catch { return { config: null, error: 'Sign-in is not configured for this address. Contact the household administrator.' }; }
-  }, []);
+  }, [environment]);
   const [session, setSession] = useState<Session | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);

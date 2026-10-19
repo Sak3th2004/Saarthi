@@ -38,6 +38,7 @@ export function Calendar({
         setEvents(data.events);
         setMore(data.more_available);
         setGoogleStatus('connected');
+        setHandoffUrl(null);
       } else {
         const response = await fetch('/oauth/google/events', { cache: 'no-store', signal: AbortSignal.timeout(45_000) });
         if (!response.ok) throw new Error();
@@ -45,6 +46,7 @@ export function Calendar({
         setEvents(data.events);
         setMore(data.more_available);
         setGoogleStatus('connected');
+        setHandoffUrl(null);
       }
     } catch (err) {
       const message = calendar

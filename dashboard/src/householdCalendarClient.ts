@@ -38,7 +38,7 @@ export type AppointmentDraft = {
 
 const messages = {
   access: 'Your Saarthi sign-in was not accepted for calendar. Sign out and sign in again.',
-  unavailable: 'Google Calendar is not available yet. Connect Google Calendar, finish approval in the loopback window, then try Load upcoming events again.',
+  unavailable: 'Google Calendar is not available yet. Connect Google Calendar, finish approval with Google, then try Load upcoming events again.',
   response: 'The calendar response could not be verified.',
   outcome: 'The appointment save could not be confirmed. It may already be on your calendar. Retry the same review before creating another appointment.',
   input: 'Check the appointment details, then review again.',
@@ -141,6 +141,19 @@ export function bookingStatusLabel(status: ExternalBookingStatus) {
   return status === 'calendar_saved' ? 'Saved on calendar' : 'Not requested on a calendar';
 }
 
+export function verifiedCalendarHandoff(value: unknown, origin: string): string {
+  if (typeof value !== 'string') return fail();
+  let url: URL, page: URL;
+  try { url = new URL(value); page = new URL(origin); } catch { return fail(); }
+  const local = ['http://localhost:5173', 'http://127.0.0.1:5173'].includes(page.origin)
+    && url.origin === 'http://127.0.0.1:8080';
+  const hosted = page.protocol === 'https:' && url.origin === page.origin;
+  if (!(local || hosted) || url.username || url.password || url.hash ||
+      url.pathname !== '/oauth/google/household-connect' ||
+      !/^\?h=[A-Za-z0-9_-]+$/.test(url.search)) return fail();
+  return url.href;
+}
+
 export function createHouseholdCalendarClient(getToken: () => string, fetcher: typeof fetch = fetch) {
   async function authorized(path: string, init: RequestInit = {}): Promise<Response> {
     let token: string;
@@ -180,10 +193,7 @@ export function createHouseholdCalendarClient(getToken: () => string, fetcher: t
         body: '{}',
       });
       const item = object(payload);
-      if (typeof item.handoff_url !== 'string' || !/^http:\/\/127\.0\.0\.1:8080\/oauth\/google\/household-connect\?h=[A-Za-z0-9_-]+$/.test(item.handoff_url)) {
-        return fail();
-      }
-      return item.handoff_url;
+      return verifiedCalendarHandoff(item.handoff_url, globalThis.location?.origin ?? 'http://localhost:5173');
     },
 
     async events(): Promise<CalendarEvents> {
