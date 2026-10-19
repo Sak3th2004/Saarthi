@@ -41,3 +41,14 @@ jobs:
           python-version: '3.11'
       - run: docker build -f mcp-server/Dockerfile -t saarthi-release:local .
       - run: python scripts/smoke_container.py
+      - name: Export verified release image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: docker save saarthi-release:local | gzip > "$RUNNER_TEMP/saarthi-release.tar.gz"
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          name: saarthi-release-${{ github.sha }}
+          path: ${{ runner.temp }}/saarthi-release.tar.gz
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
