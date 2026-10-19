@@ -364,31 +364,36 @@ class InMemoryRepository:
         self, person_id: str, med: str, status: DoseStatus, at: datetime
     ) -> tuple[DoseLog, bool]:
         at = ensure_aware(at)
-        existing = self._doses.setdefault(person_id, [])
-        # Duplicate guard: same med + same status within 30 minutes (the "I already took it" case).
-        already = any(
-            d.med.lower() == med.lower()
-            and d.status is status
-            and abs((ensure_aware(d.at) - at).total_seconds()) <= 1800
-            for d in existing
-        )
-        log = DoseLog(med=med, status=status, at=at)
-        if not already:
-            existing.append(log)
-            if status is DoseStatus.taken:
-                meds = self._meds.get(person_id, [])
-                for index, item in enumerate(meds):
-                    if item.name.strip().casefold() == med.strip().casefold() and item.supply_count is not None:
-                        remaining = max(0, item.supply_count - 1)
-                        meds[index] = item.model_copy(update={"supply_count": remaining})
-                        break
-            self.add_event(
-                person_id,
-                type="dose",
-                detail=f"{med} {status.value} at {at.isoformat(timespec='minutes')}",
-                at=at,
+        # The same lock also guards household edits; detection and all dose effects
+        # must complete together before another request can inspect this person.
+        with self._calendar_lock:
+            if person_id not in self._people:
+                raise PersonNotFoundError("Unknown person. Use a saved household member's ID.")
+            existing = self._doses.setdefault(person_id, [])
+            # Same medication + status within the existing inclusive 30-minute window.
+            already = any(
+                d.med.lower() == med.lower()
+                and d.status is status
+                and abs((ensure_aware(d.at) - at).total_seconds()) <= 1800
+                for d in existing
             )
-        return log, already
+            log = DoseLog(med=med, status=status, at=at)
+            if not already:
+                existing.append(log)
+                if status is DoseStatus.taken:
+                    meds = self._meds.get(person_id, [])
+                    for index, item in enumerate(meds):
+                        if item.name.strip().casefold() == med.strip().casefold() and item.supply_count is not None:
+                            remaining = max(0, item.supply_count - 1)
+                            meds[index] = item.model_copy(update={"supply_count": remaining})
+                            break
+                self.add_event(
+                    person_id,
+                    type="dose",
+                    detail=f"{med} {status.value} at {at.isoformat(timespec='minutes')}",
+                    at=at,
+                )
+            return log, already
 
     def add_appointment(self, person_id: str, kind: str, when: datetime) -> Appointment:
         self._appt_seq += 1

@@ -422,44 +422,51 @@ class Neo4jRepository:
         self, person_id: str, med: str, status: DoseStatus, at: datetime
     ) -> tuple[DoseLog, bool]:
         at = ensure_aware(at)
-        dup = self._read(
-            """
-            MATCH (:Person {id:$id})-[:LOGGED]->(d:Dose)
-            WHERE toLower(d.med) = toLower($med) AND d.status = $status
-              AND abs(duration.inSeconds(d.at, $at).seconds) <= 1800
-            RETURN count(d) AS c
-            """,
-            id=person_id,
-            med=med,
-            status=status.value,
-            at=at,
-        )
         log = DoseLog(med=med, status=status, at=at)
-        if dup and dup[0]["c"] > 0:
-            return log, True
         detail = f"{med} {status.value} at {at.isoformat(timespec='minutes')}"
-        decrement = status is DoseStatus.taken
-        self._write(
-            """
-            MATCH (p:Person {id:$id})
-            CREATE (p)-[:LOGGED]->(d:Dose {med:$med, status:$status, at:$at})
-            WITH p, d
-            OPTIONAL MATCH (p)-[:TAKES]->(m:Medication) WHERE toLower(m.name) = toLower($med)
-            FOREACH (_ IN CASE WHEN m IS NULL THEN [] ELSE [1] END | CREATE (d)-[:OF]->(m))
-            FOREACH (_ IN CASE WHEN $decrement AND m IS NOT NULL AND m.supply_count IS NOT NULL
-              THEN [1] ELSE [] END |
-              SET m.supply_count = CASE WHEN m.supply_count > 0 THEN m.supply_count - 1 ELSE 0 END
-            )
-            CREATE (p)-[:EXPERIENCED]->(e:Event {type:'dose', detail:$detail, at:$at})
-            """,
-            id=person_id,
-            med=med,
-            status=status.value,
-            at=at,
-            detail=detail,
-            decrement=decrement,
-        )
-        return log, False
+
+        def save(tx):
+            # A temporary property acquires a person write lock until commit,
+            # including after removal. This serializes duplicate checks across
+            # server processes, not merely threads sharing a Python repository.
+            person = tx.run(
+                "MATCH (p:Person {id:$id}) SET p._dose_lock = true "
+                "REMOVE p._dose_lock RETURN p.id AS id",
+                id=person_id,
+            ).single()
+            if person is None:
+                raise PersonNotFoundError("Unknown person. Use a saved household member's ID.")
+            duplicate = tx.run(
+                """
+                MATCH (:Person {id:$id})-[:LOGGED]->(d:Dose)
+                WHERE toLower(d.med) = toLower($med) AND d.status = $status
+                  AND abs(duration.inSeconds(d.at, $at).seconds) <= 1800
+                RETURN count(d) AS c
+                """,
+                id=person_id, med=med, status=status.value, at=at,
+            ).single()
+            if duplicate["c"] > 0:
+                return log, True
+            tx.run(
+                """
+                MATCH (p:Person {id:$id})
+                CREATE (p)-[:LOGGED]->(d:Dose {med:$med, status:$status, at:$at})
+                WITH p, d
+                OPTIONAL MATCH (p)-[:TAKES]->(m:Medication) WHERE toLower(m.name) = toLower($med)
+                FOREACH (_ IN CASE WHEN m IS NULL THEN [] ELSE [1] END | CREATE (d)-[:OF]->(m))
+                FOREACH (_ IN CASE WHEN $decrement AND m IS NOT NULL AND m.supply_count IS NOT NULL
+                  THEN [1] ELSE [] END |
+                  SET m.supply_count = CASE WHEN m.supply_count > 0 THEN m.supply_count - 1 ELSE 0 END
+                )
+                CREATE (p)-[:EXPERIENCED]->(e:Event {type:'dose', detail:$detail, at:$at})
+                """,
+                id=person_id, med=med, status=status.value, at=at,
+                detail=detail, decrement=status is DoseStatus.taken,
+            ).consume()
+            return log, False
+
+        with self._driver.session(database=self._db) as session:
+            return session.execute_write(save)
 
     def add_appointment(self, person_id: str, kind: str, when: datetime) -> Appointment:
         when = ensure_aware(when)

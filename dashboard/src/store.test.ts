@@ -9,11 +9,39 @@ import type { DashboardClient, HouseholdView, MemoryAnswer } from './contracts';
 const person = { id: 'saved-person', name: 'User supplied name', role: 'elder' as const };
 const view = { person, medications: [], appointments: [], events: [], graph: { schema_version: 1, person_id: person.id, generated_at: '2026-10-06T10:00:00Z', nodes: [], edges: [], truncated: {}, speech: '' } } satisfies HouseholdView;
 function stub() {
-  return { load: vi.fn().mockResolvedValue(view), recordEvent: vi.fn().mockResolvedValue({ person, event: { type: 'note', detail: 'saved', at: '2026-10-06T10:00:00Z' }, speech: 'Saved' }), queryMemory: vi.fn() } satisfies DashboardClient;
+  return { load: vi.fn().mockResolvedValue(view), recordEvent: vi.fn().mockResolvedValue({ person, event: { type: 'note', detail: 'saved', at: '2026-10-06T10:00:00Z' }, speech: 'Saved' }), queryMemory: vi.fn(), logDose: vi.fn(), checkIn: vi.fn() } satisfies DashboardClient;
 }
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; }
 
 describe('dashboard lifecycle', () => {
+  it('refreshes saved data without unmounting the notebook and its confirmation message', async () => {
+    const client = stub(), store = createDashboardStore(client);
+    await store.load(person.id);
+    const delayed = deferred<HouseholdView>(); client.load.mockReturnValueOnce(delayed.promise);
+    const refresh = store.refresh(person.id);
+    expect(store.getSnapshot().view?.person.id).toBe(person.id);
+    expect(store.getSnapshot().phase).toBe('ready');
+    delayed.resolve({ ...view, medications: [{ name: 'Saved medicine', dose: 'User instructions', schedule: [], supply_count: 4 }] });
+    await refresh;
+    expect(store.getSnapshot().view?.medications[0].supply_count).toBe(4);
+  });
+  it('does not overwrite a different notebook when a saved-data refresh finishes late', async () => {
+    const client = stub(), store = createDashboardStore(client);
+    await store.load(person.id);
+    const delayed = deferred<HouseholdView>(); client.load.mockReturnValueOnce(delayed.promise);
+    const refresh = store.refresh(person.id);
+    client.load.mockResolvedValueOnce({ ...view, person: { ...person, id: 'second' } });
+    await store.load('second'); delayed.resolve(view); await refresh;
+    expect(store.getSnapshot().view?.person.id).toBe('second');
+  });
+  it('keeps the current notebook and reports stale information if refresh fails', async () => {
+    const client = stub(), store = createDashboardStore(client);
+    await store.load(person.id); client.load.mockRejectedValueOnce(new Error('Private transport details'));
+    await store.refresh(person.id);
+    expect(store.getSnapshot().view?.person.id).toBe(person.id);
+    expect(store.getSnapshot().error).toContain('may be out of date');
+    expect(store.getSnapshot().error).not.toContain('Private');
+  });
   it('hides local-only setup until Cognito calendar/notify clients are provided', () => {
     const html = renderToStaticMarkup(createElement(App, { client: stub(), localTools: false }));
     expect(html).not.toContain('Check household status');

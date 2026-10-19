@@ -18,6 +18,7 @@ export function createDashboardStore(client: DashboardClient) {
   let state = initial();
   let generation = 0;
   let queryGeneration = 0;
+  let refreshGeneration = 0;
   const listeners = new Set<() => void>();
   const update = (patch: Partial<DashboardState>) => {
     state = { ...state, ...patch };
@@ -37,6 +38,17 @@ export function createDashboardStore(client: DashboardClient) {
         if (request === generation) update({ view, phase: 'ready' });
       } catch (error) {
         if (request === generation) update({ phase: 'error', error: notebookErrorMessage(error, 'Could not open this notebook. Check the saved person name or ID and that the server is available.') });
+      }
+    },
+    async refresh(person: string) {
+      if (state.view?.person.id !== person) return;
+      const owner = generation, request = ++refreshGeneration;
+      try {
+        const view = await client.load(person);
+        if (owner === generation && request === refreshGeneration) update({ view, error: '' });
+      } catch (error) {
+        if (owner === generation && request === refreshGeneration) update({ error: notebookErrorMessage(error,
+          'The records could not be refreshed. Existing information may be out of date. Refresh to try again.') });
       }
     },
     async query(question: string, timeZone?: string) {

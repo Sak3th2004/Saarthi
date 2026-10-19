@@ -141,6 +141,26 @@ export function createDashboardClient(call: ToolCaller): DashboardClient {
       if (member.id !== savedPerson || r.question !== question) throw invalid();
       return { person: member, question: text(r.question), answer: text(r.answer), supporting_events: list(r.supporting_events).map(event), speech: text(r.speech) };
     },
+    async logDose(savedPerson, input) {
+      if (!input.med.trim() || typeof input.taken !== 'boolean') throw invalid();
+      date(input.at);
+      const r = object(await call('log_dose', { person: savedPerson, med: input.med, taken: input.taken, at: input.at }));
+      const member = person(r.person), dose = object(r.dose);
+      const at = date(dose.at), status = input.taken ? 'taken' as const : 'missed' as const;
+      if (member.id !== savedPerson || dose.med !== input.med || dose.status !== status || typeof r.already_logged !== 'boolean') throw invalid();
+      // Duplicate detection can return the original saved time within the server's deduplication window.
+      if (!r.already_logged && Date.parse(at) !== Date.parse(input.at)) throw invalid();
+      return { person: member, dose: { med: text(dose.med), status, at }, already_logged: r.already_logged, speech: text(r.speech) };
+    },
+    async checkIn(savedPerson) {
+      const r = object(await call('check_in', { person: savedPerson }));
+      const member = person(r.person), concerns = list(r.concerns).map(text);
+      if (member.id !== savedPerson || (r.ok !== false && r.ok !== null) ||
+          (r.ok === false) !== (concerns.length > 0) || typeof r.missed_doses_today !== 'number' ||
+          !Number.isInteger(r.missed_doses_today) || r.missed_doses_today < 0) throw invalid();
+      return { person: member, ok: r.ok, concerns, missed_doses_today: r.missed_doses_today,
+        last_activity: r.last_activity === null ? null : date(r.last_activity), speech: text(r.speech) };
+    },
   };
 }
 

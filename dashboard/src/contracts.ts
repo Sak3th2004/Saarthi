@@ -41,8 +41,25 @@ export interface MemoryAnswer {
   supporting_events: SavedEvent[];
   speech: string;
 }
+export interface DoseInput { med: string; taken: boolean; at: string }
+export interface DoseResult {
+  person: Person;
+  dose: { med: string; status: 'taken' | 'missed'; at: string };
+  already_logged: boolean;
+  speech: string;
+}
+export interface CheckInResult {
+  person: Person;
+  ok: false | null;
+  missed_doses_today: number;
+  last_activity: string | null;
+  concerns: string[];
+  speech: string;
+}
 export interface DashboardClient {
   load(person: string): Promise<HouseholdView>;
   recordEvent(person: string, event: { type: string; detail: string }): Promise<EventResult>;
   queryMemory(person: string, question: string, timeZone?: string): Promise<MemoryAnswer>;
+  logDose(person: string, input: DoseInput): Promise<DoseResult>;
+  checkIn(person: string): Promise<CheckInResult>;
 }
