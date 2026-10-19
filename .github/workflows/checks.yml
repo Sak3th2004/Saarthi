@@ -52,3 +52,30 @@ jobs:
           retention-days: 3
           compression-level: 0
           if-no-files-found: error
+  publish-image:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'Sak3th2004/Saarthi'
+    needs: [backend, dashboard, release-container]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: saarthi-release-${{ github.sha }}
+          path: ${{ runner.temp }}/release
+      - run: docker load -i "$RUNNER_TEMP/release/saarthi-release.tar.gz"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::011528303937:role/saarthi-github-release
+          aws-region: us-east-1
+          role-session-name: SaarthiRelease
+      - name: Publish immutable tested image
+        env:
+          REGISTRY: 011528303937.dkr.ecr.us-east-1.amazonaws.com
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin "$REGISTRY"
+          docker tag saarthi-release:local "$REGISTRY/saarthi-notebook:$IMAGE_TAG"
+          docker push "$REGISTRY/saarthi-notebook:$IMAGE_TAG"

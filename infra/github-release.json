@@ -1,0 +1,36 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Allow Saarthi main-branch CI to publish images only. No database, secret, or deployment access.",
+  "Resources": {
+    "GitHubIdentity": {
+      "Type": "AWS::IAM::OIDCProvider",
+      "Properties": {"Url": "https://token.actions.githubusercontent.com", "ClientIdList": ["sts.amazonaws.com"]}
+    },
+    "Publisher": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": "saarthi-github-release",
+        "MaxSessionDuration": 3600,
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow", "Action": "sts:AssumeRoleWithWebIdentity",
+            "Principal": {"Federated": {"Ref": "GitHubIdentity"}},
+            "Condition": {"StringEquals": {
+              "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+              "token.actions.githubusercontent.com:sub": "repo:Sak3th2004/Saarthi:ref:refs/heads/main"
+            }}
+          }]
+        },
+        "Policies": [{"PolicyName": "PublishNotebookImage", "PolicyDocument": {
+          "Version": "2012-10-17", "Statement": [
+            {"Effect": "Allow", "Action": "ecr:GetAuthorizationToken", "Resource": "*"},
+            {"Effect": "Allow", "Action": ["ecr:BatchCheckLayerAvailability", "ecr:InitiateLayerUpload", "ecr:UploadLayerPart", "ecr:CompleteLayerUpload", "ecr:PutImage"],
+             "Resource": {"Fn::Sub": "arn:${AWS::Partition}:ecr:us-east-1:${AWS::AccountId}:repository/saarthi-notebook"}}
+          ]
+        }}]
+      }
+    }
+  },
+  "Outputs": {"PublisherRoleArn": {"Value": {"Fn::GetAtt": ["Publisher", "Arn"]}}}
+}
