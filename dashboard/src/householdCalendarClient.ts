@@ -101,8 +101,10 @@ export function parseAppointmentReview(value: unknown, personId: string, draft?:
   if (typeof item.review_token !== 'string' || !item.review_token.trim() || item.review_token.length > 8192) return fail();
   if (typeof item.title !== 'string' || typeof item.start !== 'string' || typeof item.end !== 'string') return fail();
   if (typeof item.time_zone !== 'string' || typeof item.calendar_account !== 'string' || typeof item.notice !== 'string') return fail();
-  if (draft && (item.title !== draft.title || item.time_zone !== draft.time_zone ||
-      item.start.slice(0, 16) !== draft.start_local || item.end.slice(0, 16) !== draft.end_local)) return fail();
+  // The server strips surrounding whitespace from draft fields before review.
+  // Compare the same cleaned values while still rejecting changed content/times.
+  if (draft && (item.title !== draft.title.trim() || item.time_zone !== draft.time_zone.trim() ||
+      item.start.slice(0, 16) !== draft.start_local.trim() || item.end.slice(0, 16) !== draft.end_local.trim())) return fail();
   const timestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00(?:Z|[+-]\d{2}:\d{2})$/;
   if (!timestamp.test(item.start) || !timestamp.test(item.end) ||
       !Number.isFinite(Date.parse(item.start)) || Date.parse(item.end) <= Date.parse(item.start) ||

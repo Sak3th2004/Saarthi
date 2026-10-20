@@ -42,6 +42,13 @@ const reviewPayload = () => ({
 });
 
 describe('household calendar response verification', () => {
+  it('accepts server whitespace cleanup without accepting changes to appointment details', () => {
+    const draft = { person: 'elder-1', title: '  Clinic visit \n', start_local: '2026-10-12T09:00',
+      end_local: '2026-10-12T10:00', time_zone: ' Asia/Kolkata ' };
+    expect(parseAppointmentReview(reviewPayload(), draft.person, draft).title).toBe('Clinic visit');
+    expect(() => parseAppointmentReview({ ...reviewPayload(), title: 'Other visit' }, draft.person, draft)).toThrow();
+    expect(() => parseAppointmentReview({ ...reviewPayload(), time_zone: 'Asia/Tokyo' }, draft.person, draft)).toThrow();
+  });
   it('accepts bounded Google events and rejects invented sources', () => {
     expect(parseCalendarEvents(eventsPayload()).events[0].summary).toBe('Physio');
     expect(() => parseCalendarEvents({ ...eventsPayload(), source: 'invented' })).toThrow();
