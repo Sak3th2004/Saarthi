@@ -10,9 +10,9 @@
 .talk-layout{display:grid;grid-template-columns:minmax(260px,.8fr) minmax(0,1.4fr);gap:32px;padding:28px 32px}
 .talk-composer{align-self:start;display:grid;gap:12px}
 .talk-composer textarea{min-height:108px}.talk-composer .transcript-interim{color:#517183;border-color:#127b8b;background:#f3fbfd}
-.voice-stage{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:200px;border-radius:18px;background:radial-gradient(ellipse at center,#e2f3f7 0%,#f5f9fa 66%);overflow:hidden}
-.voice-stage p{font-size:.75rem;color:#38596c;z-index:1;margin-top:30px}
-.voice-button{z-index:1;width:76px;height:76px;border-radius:50%;border:1px solid #19647d;display:grid;place-items:center;background:#123c53;color:white;box-shadow:0 4px 8px #123c531c,0 16px 32px #123c5312}
+.voice-stage{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:280px;padding:12px;border-radius:18px;background:radial-gradient(ellipse at center,#e2f3f7 0%,#f5f9fa 66%);overflow:hidden}
+.voice-stage p{font-size:.75rem;color:#38596c;z-index:1;margin-top:12px;text-align:center}
+.voice-button{z-index:1;width:48px;height:48px;border-radius:50%;border:1px solid #19647d;display:grid;place-items:center;background:#123c53;color:white;box-shadow:0 4px 8px #123c531c,0 16px 32px #123c5312}
 .voice-button svg{width:28px;height:28px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round}.voice-stage.listening .voice-button svg{fill:currentColor;stroke:none}
 .voice-orbit{position:absolute;top:22px;width:138px;height:138px;pointer-events:none}
 .voice-orbit span{position:absolute;inset:0;border:1px solid #a9cbd8;border-radius:50%;opacity:.7}
@@ -23,6 +23,20 @@
 .voice-stage.thinking .voice-orbit span,.voice-stage.loading-audio .voice-orbit span{border-color:#586aa6}
 .voice-stage.speaking .voice-orbit span{border-color:#087e98;opacity:1}
 .voice-error-code{display:block;margin-top:8px;font-size:.72rem}
+.companion-face{width:190px;height:171px;flex:none}.companion-face svg{width:100%;height:100%}
+.companion-face .companion-eyes{transform-origin:100px 88px}
+.companion-face .companion-mouth{transform-origin:100px 114px}
+.companion-face.listening .companion-light{fill:#00a5a0}
+.companion-face.thinking .companion-eyes,.companion-face.loading-audio .companion-eyes{transform:scaleY(.45)}
+.companion-face.blocked .companion-light{fill:#a24428}
+.companion-face.speaking .companion-mouth{stroke-width:6}
+.companion-session{border:1px solid #b8d3da;background:#f4fafb;border-radius:14px;padding:18px}
+.companion-session-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.companion-session-heading .eyebrow{font-size:.6rem;margin:0;line-height:1.5}
+.session-badge{font-size:.65rem;white-space:nowrap;color:#215368;border:1px solid #aecdd7;border-radius:20px;padding:4px 8px}
+.companion-session>p{margin:12px 0}.companion-session .button{width:100%}
+.companion-session .session-end{background:#753a2e;color:white;border-color:#753a2e}
+.session-live{border-left:3px solid #147b88;padding-left:10px;font-size:.8rem;color:#174c5a}
 .talk-settings label{display:block;margin:12px 0 6px}
 .talk-controls{display:flex;flex-wrap:wrap;gap:10px}
 .talk-settings summary,.talk-answer summary{cursor:pointer;padding:12px 0;font-weight:600}
@@ -41,6 +55,9 @@
 .talk-answer>p,.talk-draft>p{margin-bottom:12px}.talk-answer>button{margin-bottom:8px}
 .talk-disclosure{padding:16px 32px;background:#f5f8f9;border-top:1px solid #d8e4e9;color:#536d7a;font-size:.75rem;line-height:1.6}
 @media(prefers-reduced-motion:no-preference){
+ .companion-face .companion-eyes,.companion-face .companion-mouth{transition:transform 150ms ease-out,stroke-width 150ms ease-out}
+ .companion-face.listening .companion-mouth{transform:scaleY(calc(1 + var(--voice-level,0)))}
+ .companion-face.listening{transform:translateY(calc(var(--voice-level,0)*-3px))}
  .voice-button{transition:transform 150ms ease-out,background-color 150ms ease-out}
  .voice-button:not(:disabled):active{transform:scale(.96)}
  .voice-orbit{transition:transform 100ms linear}

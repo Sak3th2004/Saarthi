@@ -2,6 +2,7 @@ import { isValidElement, type ReactElement, type ReactNode } from 'react';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { TalkToSaarthi } from './TalkToSaarthi';
 import type { TalkReply } from './talkClient';
+import type { VoiceCallbacks } from './awsVoiceClient';
 
 const hooks = vi.hoisted(() => ({ values: [] as unknown[], index: 0, cleanups: [] as (() => void)[] }));
 vi.mock('react', async original => ({
@@ -74,5 +75,32 @@ describe('conversation controls', () => {
     expect(client.ask).not.toHaveBeenCalled();
     hooks.cleanups.forEach(cleanup => cleanup?.());
     expect(abort).toHaveBeenCalled();
+  });
+  it('starts automatic conversation only on click and ends it without sending a draft', async () => {
+    let callbacks!: VoiceCallbacks;
+    const abort = vi.fn(), onDraft = vi.fn(), client = { ask: vi.fn().mockResolvedValue(reply) };
+    const voice = {
+      listen: vi.fn((value: string, handlers: VoiceCallbacks) => { callbacks = handlers; return { abort, stop: vi.fn() }; }),
+      // Unavailable playback must stop automatic mode, keeping the returned draft visible.
+      speak: vi.fn().mockRejectedValue(new Error('Playback unavailable')),
+    };
+    const render = () => { hooks.index = 0; return elements(TalkToSaarthi({ person, client, voice, onDraft })); };
+    render();
+    expect(voice.listen).not.toHaveBeenCalled();
+    (render().find(n => n.props.children === 'Start conversation')!.props.onClick as Function)();
+    callbacks.started(); callbacks.transcript('Help me tell my family.', false); callbacks.ended();
+    await vi.waitFor(() => expect(render().some(n => n.props.children === 'Use this draft')).toBe(true));
+    await vi.waitFor(() => expect(render().some(n => n.props.children === 'Start conversation')).toBe(true));
+    expect(client.ask).toHaveBeenCalledExactlyOnceWith('parent', 'Help me tell my family.', expect.any(String), undefined);
+    expect(onDraft).not.toHaveBeenCalled();
+  });
+  it('ends microphone capture when the automatic conversation is closed', () => {
+    const abort = vi.fn();
+    const voice = { listen: vi.fn(() => ({ abort, stop: vi.fn() })), speak: vi.fn() };
+    const render = () => { hooks.index = 0; return elements(TalkToSaarthi({ person, client: { ask: vi.fn() }, voice, onDraft: vi.fn() })); };
+    (render().find(n => n.props.children === 'Start conversation')!.props.onClick as Function)();
+    (render().find(n => n.props.children === 'End conversation')!.props.onClick as Function)();
+    expect(abort).toHaveBeenCalledOnce();
+    expect(render().some(n => n.props.children === 'Start conversation')).toBe(true);
   });
 });
