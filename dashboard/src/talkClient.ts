@@ -25,7 +25,7 @@ export function parseTalkReply(value: unknown, person: string, question: string,
   const r = object(value), p = object(r.person);
   if (p.id !== person || !['elder', 'family'].includes(String(p.role)) || r.question !== question) throw invalid();
   const id = text(r.conversation_id, 200), answer = text(r.answer);
-  if (conversationId && id !== conversationId || r.speech !== answer) throw invalid();
+  if (conversationId && id !== conversationId) throw invalid();
   if (!Array.isArray(r.evidence) || r.evidence.length > 20 || !Array.isArray(r.sources_checked) || r.sources_checked.length > 20) throw invalid();
   const evidence = r.evidence.map(value => {
     const e = object(value);
@@ -48,7 +48,7 @@ export function parseTalkReply(value: unknown, person: string, question: string,
   }
   return {
     person: { id: person, name: text(p.name, 200), role: p.role as Person['role'] },
-    question, conversation_id: id, answer, speech: answer, evidence, action,
+    question, conversation_id: id, answer, speech: text(r.speech, 2000), evidence, action,
     sources_checked: r.sources_checked.map(v => text(v, 200)), notice: text(r.notice), model_id: text(r.model_id, 300),
   };
 }

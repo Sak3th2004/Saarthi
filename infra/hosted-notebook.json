@@ -32,6 +32,7 @@
         "AssumeRolePolicyDocument": {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": {"Service": "tasks.apprunner.amazonaws.com"}, "Action": "sts:AssumeRole"}]},
         "Policies": [{"PolicyName": "NotebookServices", "PolicyDocument": {
           "Version": "2012-10-17", "Statement": [
+            {"Effect": "Allow", "Action": ["polly:SynthesizeSpeech", "transcribe:StartStreamTranscriptionWebSocket"], "Resource": "*", "Condition": {"StringEquals": {"aws:RequestedRegion": {"Ref": "AWS::Region"}}}},
             {"Effect": "Allow", "Action": ["secretsmanager:GetSecretValue"], "Resource": [{"Ref": "Neo4jPasswordSecretArn"}, {"Ref": "GoogleClientSecretArn"}]},
             {"Effect": "Allow", "Action": ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue", "secretsmanager:CreateSecret", "secretsmanager:TagResource"], "Resource": {"Fn::Sub": "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:saarthi/${AWS::StackName}/calendar/*"}},
             {"Effect": "Allow", "Action": ["ses:SendEmail"], "Resource": {"Fn::Sub": "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SesSenderEmail}"}, "Condition": {"StringEquals": {"ses:FromAddress": {"Ref": "SesSenderEmail"}}}},
@@ -60,6 +61,7 @@
             "ImageConfiguration": {
               "Port": "8080",
               "RuntimeEnvironmentVariables": [
+                {"Name": "SAARTHI_AWS_VOICE", "Value": "1"},
                 {"Name": "SAARTHI_AUTH", "Value": "cognito"},
                 {"Name": "SAARTHI_BACKEND", "Value": "neo4j"},
                 {"Name": "SAARTHI_AGENTS", "Value": "bedrock"},

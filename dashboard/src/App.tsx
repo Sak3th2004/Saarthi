@@ -15,6 +15,7 @@ import { medicationEmptyCopy, supplyLabel } from './medicationEntry';
 import { isInternalEvent, timelineEventBody } from './timelineDisplay';
 import { TalkToSaarthi } from './TalkToSaarthi';
 import type { TalkAction, TalkClient } from './talkClient';
+import type { AwsVoiceClient } from './awsVoiceClient';
 
 export function formatDate(value: string) {
   const date = new Date(value);
@@ -22,7 +23,7 @@ export function formatDate(value: string) {
 }
 
 export function App({
-  client, localTools = true, householdManagement, householdCalendar, householdNotify, talk,
+  client, localTools = true, householdManagement, householdCalendar, householdNotify, talk, voice,
 }: {
   client: DashboardClient;
   localTools?: boolean;
@@ -30,6 +31,7 @@ export function App({
   householdCalendar?: HouseholdCalendarClient;
   householdNotify?: HouseholdNotifyClient;
   talk?: TalkClient;
+  voice?: AwsVoiceClient;
 }) {
   const store = useMemo(() => createDashboardStore(client), [client]);
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
@@ -70,7 +72,7 @@ export function App({
         {state.phase === 'loading' && <div className="loading-state" role="status"><span className="loading-ring" />Loading saved records…</div>}
         {!view && state.phase !== 'loading' && <section className="welcome-panel"><div className="notebook-illustration" aria-hidden="true"><span /><span /><span /></div><p className="eyebrow">START WITH YOUR FAMILY</p><h2>Your notebook is waiting.</h2><p>Open a saved person's records to see their connections, routines and timeline.</p><p className="muted">{localTools ? 'Use household setup below to check for saved records or start your household.' : householdManagement ? 'After sign-in, choose a notebook above — the default older adult is pre-selected — or update your family details.' : 'Use the saved household name or ID provided by your caregiver.'}</p></section>}
         {view && <>
-          {talk && <TalkToSaarthi key={view.person.id} person={view.person} client={talk} canDraftFamily={Boolean(householdNotify)} onDraft={action => {
+          {talk && <TalkToSaarthi key={view.person.id} person={view.person} client={talk} voice={voice} canDraftFamily={Boolean(householdNotify)} onDraft={action => {
             setTalkDraft({ person: view.person.id, id: crypto.randomUUID(), action });
             document.getElementById(action.type === 'family_message' ? 'family-updates' : 'calendar')?.scrollIntoView({ block: 'start' });
           }} />}

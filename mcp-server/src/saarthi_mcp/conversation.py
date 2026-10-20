@@ -267,9 +267,24 @@ class ConversationService:
         )
         if any(value["kind"] == "medication" for value in selected):
             answer += "\nThese are saved facts, not medical advice. Talk to your doctor about treatment."
+        # Speak a concise, verbatim saved fact rather than reading every timestamp
+        # and evidence record aloud. Full provenance remains visible on screen.
+        speech = answer
+        if selected and intent in {"answer", "family_message"}:
+            first = selected[0]
+            if len(first["text"]) <= 600:
+                speech = "The saved record says: " + first["text"]
+                if len(selected) > 1:
+                    speech += " There are more supporting records on screen."
+            else:
+                speech = "I found a detailed saved record. You can read it in the supporting records below."
+            if intent == "family_message":
+                speech += " Your family update is ready to review. Nothing has been sent."
+            if any(value["kind"] == "medication" for value in selected):
+                speech += " These are saved facts, not medical advice. Talk to your doctor about treatment."
         return {
             "person": {"id": person.id, "name": person.name, "role": person.role.value},
-            "question": question, "conversation_id": "", "answer": answer, "speech": answer,
+            "question": question, "conversation_id": "", "answer": answer, "speech": speech,
             "evidence": selected, "action": action, "sources_checked": checked,
             "notice": notice, "model_id": self.model.model_id,
             "_retrievals": retrievals,

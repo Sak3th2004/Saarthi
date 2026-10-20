@@ -68,7 +68,7 @@ describe('conversation controls', () => {
     vi.stubGlobal('window', { SpeechRecognition: Recognition });
     const client = { ask: vi.fn() };
     const render = () => { hooks.index = 0; return elements(TalkToSaarthi({ person, client, onDraft: vi.fn() })); };
-    (render().find(n => n.props.children === 'Use microphone')!.props.onClick as Function)();
+    (render().find(n => n.props['aria-label'] === 'Use microphone')!.props.onClick as Function)();
     recognition.onresult({ results: [[{ transcript: 'Where is my notebook?' }]] });
     expect(render().find(n => n.type === 'textarea')!.props.value).toBe('Where is my notebook?');
     expect(client.ask).not.toHaveBeenCalled();

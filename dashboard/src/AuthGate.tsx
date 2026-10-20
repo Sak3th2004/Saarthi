@@ -7,6 +7,7 @@ import { createHouseholdManagementClient } from './householdManagementClient';
 import { createHouseholdCalendarClient } from './householdCalendarClient';
 import { createHouseholdNotifyClient } from './householdNotifyClient';
 import { createTalkClient } from './talkClient';
+import { createAwsVoiceClient } from './awsVoiceClient';
 
 const localTalk = createTalkClient(httpCaller(() => new URL('/mcp', window.location.href)));
 
@@ -46,6 +47,7 @@ export function AuthGate({ environment = import.meta.env }: { environment?: Reco
   const householdCalendar = useMemo(() => createHouseholdCalendarClient(accessToken), [session]);
   const householdNotify = useMemo(() => createHouseholdNotifyClient(accessToken), [session]);
   const talk = useMemo(() => createTalkClient(httpCaller(() => new URL('/mcp', window.location.href), accessToken)), [session]);
+  const voice = useMemo(() => createAwsVoiceClient(accessToken), [session]);
   if (!configuration.error && !configuration.config) return <App client={client} talk={localTalk} />;
   async function signIn(config: AuthConfig) {
     setBusy(true); setError('');
@@ -54,7 +56,7 @@ export function AuthGate({ environment = import.meta.env }: { environment?: Reco
   }
   if (session && configuration.config) return <>
     <div className="auth-controls"><button className="button secondary" onClick={() => { setSession(null); window.location.assign(logoutUrl(configuration.config!)); }}>Sign out</button></div>
-    <App key={session.expiresAt} client={authenticated} localTools={false} householdManagement={householdManagement} householdCalendar={householdCalendar} householdNotify={householdNotify} talk={talk} />
+    <App key={session.expiresAt} client={authenticated} localTools={false} householdManagement={householdManagement} householdCalendar={householdCalendar} householdNotify={householdNotify} talk={talk} voice={voice} />
   </>;
   return <main><section className="card"><p className="eyebrow">SAARTHI FAMILY NOTEBOOK</p><h1>A private place for your family.</h1><p>Sign in with your approved caregiver account to open the household notebook.</p>
     {(error || configuration.error) && <p className="notice error" role="alert">{error || configuration.error}</p>}

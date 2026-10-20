@@ -45,7 +45,8 @@ def ask(environment, question="Where is the orange folder?", **kwargs):
 def test_saved_evidence_and_internal_audit(environment):
     repo, person, _, _ = environment
     result = ask(environment)
-    assert result["answer"] == result["speech"]
+    assert "The orange folder is beside the balcony." in result["speech"]
+    assert "Recorded " not in result["speech"]
     assert "The orange folder is beside the balcony." in result["answer"]
     assert len(result["evidence"]) == 1
     assert result["person"] == {"id": person.id, "name": person.name, "role": "elder"}

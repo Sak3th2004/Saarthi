@@ -471,6 +471,10 @@ def build_server(repo: HouseholdRepository | None = None, orchestrator=None, con
         attach_household_management(mcp, HouseholdManagement(repo, persistent=settings.backend == 'neo4j'),
                                     verifier, settings.cognito.resource_url)
         attach_family_notification_routes(mcp, family_notify, verifier, settings.cognito.resource_url)
+        import os
+        if os.getenv("SAARTHI_AWS_VOICE") == "1":
+            from saarthi_mcp.voice import VoiceService, attach_voice_routes
+            attach_voice_routes(mcp, VoiceService(settings.aws_region), verifier, settings.cognito.resource_url)
     return mcp
 
 

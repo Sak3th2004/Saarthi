@@ -20,7 +20,7 @@ describe('Talk to Saarthi verification', () => {
   });
   it.each([
     { person: { id: 'other', name: 'Other', role: 'elder' } },
-    { question: 'different' }, { conversation_id: 'different' }, { speech: 'unsupported speech' },
+    { question: 'different' }, { conversation_id: 'different' }, { speech: 42 },
     { evidence: [{ id: 'one', kind: 'imagined', text: 'invented', at: null }] },
     { evidence: [...reply().evidence, ...reply().evidence] },
     { action: { type: 'send_now', message: 'unreviewed' } },
