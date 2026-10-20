@@ -11,7 +11,7 @@ def test_publisher_is_bound_to_main_and_cannot_read_data_or_deploy():
     assert trust[0]['Action'] == 'sts:AssumeRoleWithWebIdentity'
     assert trust[0]['Condition']['StringEquals'] == {
         'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
-        'token.actions.githubusercontent.com:sub': 'repo:Sak3th2004/Saarthi:ref:refs/heads/main',
+        'token.actions.githubusercontent.com:sub': 'repo:Sak3th2004@139762801/Saarthi@1357750136:ref:refs/heads/main',
     }
     assert not role.get('ManagedPolicyArns')
     permissions = role['Policies'][0]['PolicyDocument']['Statement']
