@@ -111,7 +111,7 @@ export function httpCaller(endpoint: () => URL, accessToken?: () => string): Too
       if (!available.tools.some(tool => tool.name === name)) {
         throw new Error('This server does not provide the requested notebook tool.');
       }
-      const result = await sdk.callTool({ name, arguments: args }, { timeout: 45_000 });
+      const result = await sdk.callTool({ name, arguments: args }, { timeout: name === 'talk_to_saarthi' ? 110_000 : 45_000 });
       if (result.isError || result.structuredContent === undefined) throw invalid();
       return result.structuredContent;
     } catch (error) {

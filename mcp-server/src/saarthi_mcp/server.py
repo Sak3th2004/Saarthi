@@ -77,7 +77,7 @@ def _listed_appointment(appt: Appointment) -> ListedAppointment:
     return ListedAppointment(**appt.model_dump(), external_booking_status=status)
 
 
-def build_server(repo: HouseholdRepository | None = None, orchestrator=None) -> FastMCP:
+def build_server(repo: HouseholdRepository | None = None, orchestrator=None, conversation_model=None) -> FastMCP:
     """Create an independent server; handlers capture only this instance's dependencies.
 
     Instance isolation is not user authorization. Public access still requires auth.
@@ -94,6 +94,11 @@ def build_server(repo: HouseholdRepository | None = None, orchestrator=None) -> 
             model_id=settings.bedrock_model_id, region=settings.aws_region,
         )
     verifier = HouseholdTokenVerifier(settings.cognito) if settings.cognito else None
+    from saarthi_mcp.conversation import ConversationError, ConversationService
+    if conversation_model is None and settings.agent_mode == "bedrock":
+        from saarthi_agents.conversation import ConversationModel
+        conversation_model = ConversationModel(settings.bedrock_model_id, settings.aws_region)
+    conversation = ConversationService(repo, conversation_model)
     family_notify = FamilyNotificationService(repo, ses_settings=settings.ses)
     def notification_actor():
         if settings.cognito is None:
@@ -166,6 +171,28 @@ def build_server(repo: HouseholdRepository | None = None, orchestrator=None) -> 
 
 
     # --------------------------------------------------------------------------- tools
+
+    @mcp.tool(
+        annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
+    )
+    def talk_to_saarthi(
+        person: str,
+        question: Annotated[str, Field(min_length=1, max_length=2000)],
+        time_zone: Annotated[str, Field(min_length=1, max_length=80)],
+        conversation_id: Annotated[str | None, Field(max_length=32)] = None,
+    ) -> ToolResult:
+        """Ask about saved records or prepare an editable draft; never sends or books.
+
+        Bedrock selects bounded read tools for the chosen person. Answers quote
+        authoritative saved evidence. Only an internal activity audit is written.
+        """
+        try:
+            result = conversation.talk(
+                notification_actor(), _resolve(person), question, time_zone, conversation_id,
+            )
+        except ConversationError as exc:
+            raise ToolError(str(exc)) from None
+        return ToolResult(content=result["speech"], structured_content=result)
 
     @mcp.tool(
         annotations={"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False},

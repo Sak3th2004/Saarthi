@@ -1,0 +1,17 @@
+.talk-card{margin:24px 0;scroll-margin-top:24px;border-top:4px solid #087e98}
+.talk-layout{display:grid;grid-template-columns:minmax(260px,.8fr) minmax(0,1.4fr);gap:28px;margin-top:24px}
+.talk-composer{align-self:start;display:grid;gap:12px}
+.talk-composer textarea{min-height:132px}
+.talk-controls{display:flex;flex-wrap:wrap;gap:10px}
+.talk-settings summary,.talk-answer summary{cursor:pointer;padding:12px 0;font-weight:600}
+.talk-conversation{max-height:720px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;border:1px solid #c8d7df;border-radius:16px;padding:24px;background:#f4f8fb}
+.talk-empty{padding:24px 8px;max-width:470px;margin:auto;text-align:center}
+.talk-emblem{display:grid;place-items:center;width:64px;height:64px;margin:0 auto 24px;border-radius:22px;background:#103449;color:#fff;font-size:38px;font-family:Georgia,serif}
+.talk-turn+.talk-turn{margin-top:28px;padding-top:24px;border-top:1px solid #c8d7df}
+.talk-question{margin:0 0 20px;padding:16px 20px;border-radius:14px;background:#e0edf3;white-space:pre-wrap;overflow-wrap:anywhere}
+.talk-question .eyebrow,.talk-answer>.eyebrow{display:block;margin-bottom:8px}
+.talk-answer-text{white-space:pre-wrap;overflow-wrap:anywhere}
+.talk-draft{padding:16px;border:1px solid #96b8c8;border-radius:12px;margin:16px 0;background:white}
+.talk-answer .evidence-list{padding-left:20px}
+@media(max-width:1000px){.talk-layout{grid-template-columns:1fr}.talk-conversation{max-height:600px}}
+@media(max-width:540px){.talk-conversation{padding:16px}.talk-controls .button{width:100%}}

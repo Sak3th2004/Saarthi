@@ -15,11 +15,13 @@ export function Calendar({
   person,
   calendar,
   onAppointmentSaved,
+  draft,
 }: {
   person?: Person;
   /** When set (Cognito), uses Bearer `/household/calendar/*`. Otherwise local `/oauth/google/*`. */
   calendar?: HouseholdCalendarClient;
   onAppointmentSaved?: (personId: string) => void;
+  draft?: { id: string; title: string; start_local: string; end_local: string; time_zone: string };
 }) {
   const [events, setEvents] = useState<CalendarEvent[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -82,7 +84,7 @@ export function Calendar({
       ? 'Not connected'
       : 'Not confirmed yet';
 
-  return <section className="card" aria-labelledby="calendar-heading">
+  return <section className="card" id="calendar" aria-labelledby="calendar-heading">
     <p className="eyebrow">YOUR CONNECTED CALENDAR</p><h2 id="calendar-heading">Google Calendar</h2>
     <p className="muted">Upcoming events from the connected Google account. These belong to the calendar account and are not automatically assigned to a household member.</p>
     {calendar ? (
@@ -104,7 +106,7 @@ export function Calendar({
     {error && <p role="alert" className="notice error">{error}</p>}
     {events && (events.length ? <ul className="routine-list">{events.map(event => <li key={event.id}><div><strong>{event.summary}</strong><p>{event.start.date ? `${event.start.date} · All day` : new Date(event.start.dateTime!).toLocaleString()}</p></div><span className="tag">{event.status ?? 'Calendar event'}</span></li>)}</ul> : <p>No upcoming events were returned by Google Calendar.</p>)}
     {more && <p className="muted">Showing the first 25 upcoming events. More are available in Google Calendar.</p>}
-    {person ? <AppointmentEditor key={person.id} person={person} calendar={calendar} onSaved={status => {
+    {person ? <AppointmentEditor key={person.id} person={person} calendar={calendar} draft={draft} onSaved={status => {
       void load();
       if (status === 'saved') onAppointmentSaved?.(person.id);
     }} /> : <p className="muted">Open a saved person's notebook to add an appointment with a review before saving.</p>}
