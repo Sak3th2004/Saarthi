@@ -22,6 +22,14 @@ dashboard/**
 !dashboard/index.html
 !dashboard/src/
 !dashboard/src/**
+!dashboard/packages/
+dashboard/packages/**
+!dashboard/packages/voice-turns/
+dashboard/packages/voice-turns/**
+!dashboard/packages/voice-turns/package.json
+!dashboard/packages/voice-turns/LICENSE
+!dashboard/packages/voice-turns/src/
+!dashboard/packages/voice-turns/src/**
 **/__pycache__/**
 **/*.pyc
 **/*.test.*
