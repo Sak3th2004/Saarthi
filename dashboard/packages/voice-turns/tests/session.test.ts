@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { startConversationSession, TurnBoundary } from './conversationSession';
-import type { VoiceCallbacks } from './awsVoiceClient';
+import { startConversationSession, TurnBoundary } from '../src/session';
+import type { VoiceCallbacks } from '../src/types';
 
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(10000); });
 afterEach(() => vi.useRealTimers());

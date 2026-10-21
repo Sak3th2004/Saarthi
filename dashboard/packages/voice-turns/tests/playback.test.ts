@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { playVoiceBlob } from './voicePlayback';
+import { playVoiceBlob } from '../src/playback';
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 describe('conversation playback cleanup', () => {
