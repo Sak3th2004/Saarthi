@@ -43,7 +43,8 @@ class MemoryGraph(BaseModel):
     speech: str
 
 
-def _identity(owner: str, kind: str, record: dict) -> str:
+def graph_node_identity(owner: str, kind: str, record: dict) -> str:
+    """Exact, person-scoped identity shared by the graph and answer citations."""
     canonical = json.dumps([owner, kind, record], sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return kind + ":" + sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -58,7 +59,7 @@ def memory_graph(repo: HouseholdRepository, person: Person, limit: int = 30) -> 
     if type(limit) is not int or not 1 <= limit <= 100:
         raise ValueError("Graph limit must be an integer between 1 and 100.")
     root = GraphNode(
-        id=_identity(person.id, "person", {"id": person.id}), kind="person", label=person.name,
+        id=graph_node_identity(person.id, "person", {"id": person.id}), kind="person", label=person.name,
         record=person.model_dump(mode="json", include={"id", "name", "role"}),
     )
     nodes = {root.id: root}
@@ -66,8 +67,8 @@ def memory_graph(repo: HouseholdRepository, person: Person, limit: int = 30) -> 
     links = repo.relationships_for(person.id, limit=limit + 1)
     truncated = {"person": len(links) > limit}
     for link in links[:limit]:
-        source_id = _identity(person.id, "person", {"id": link.source.id})
-        target_id = _identity(person.id, "person", {"id": link.target.id})
+        source_id = graph_node_identity(person.id, "person", {"id": link.source.id})
+        target_id = graph_node_identity(person.id, "person", {"id": link.target.id})
         for member, node_id in ((link.source, source_id), (link.target, target_id)):
             nodes[node_id] = GraphNode(id=node_id, kind="person", label=member.name,
                                       record=member.model_dump(mode="json", include={"id", "name", "role"}))
@@ -83,7 +84,7 @@ def memory_graph(repo: HouseholdRepository, person: Person, limit: int = 30) -> 
         truncated[kind] = len(records) > limit
         for saved in records[:limit]:
             record = saved.model_dump(mode="json")
-            node_id = _identity(person.id, kind, record)
+            node_id = graph_node_identity(person.id, kind, record)
             label = record[{"medication": "name", "appointment": "kind", "event": "type"}[kind]]
             nodes[node_id] = GraphNode(id=node_id, kind=kind, label=label, record=record)
             edges[node_id] = GraphEdge(source=root.id, target=node_id, relation=relation)

@@ -1,8 +1,12 @@
 import { useId, useState } from 'react';
 import type { MemoryGraph } from './contracts';
+import type { TalkReply } from './talkClient';
 
-export function MemoryMap({ graph }: { graph: MemoryGraph }) {
-  const [selected, select] = useState<string | null>(null);
+export function MemoryMap({ graph, evidence, onClearEvidence }: {
+  graph: MemoryGraph; evidence?: TalkReply['evidence'][number]; onClearEvidence?: () => void;
+}) {
+  const linked = graph.nodes.filter(node => evidence?.graph_node_ids?.includes(node.id));
+  const [selected, select] = useState<string | null>(() => linked.find(node => node.record.id !== graph.person_id)?.id ?? linked[0]?.id ?? null);
   const [filter, setFilter] = useState('all');
   const arrowId = useId().replaceAll(':', '') + '-relationship-arrow';
   const root = graph.nodes.find(n => n.kind === 'person' && n.record.id === graph.person_id);
@@ -19,6 +23,7 @@ export function MemoryMap({ graph }: { graph: MemoryGraph }) {
     (edge.source === active?.id || edge.target === active?.id));
   const label = (id: string) => graph.nodes.find(node => node.id === id)?.label ?? id;
   return <>
+    {evidence && <div className="graph-evidence" role="status"><span className="eyebrow">FROM YOUR CONVERSATION</span><p>{evidence.text}</p><p>{linked.length ? `${linked.length} matching saved ${linked.length === 1 ? 'record is' : 'records are'} outlined below.` : 'This exact record is not in the loaded map. It may be older, changed, or outside this view. Refresh records to check; the answer’s supporting text is shown above.'}</p>{onClearEvidence && <button className="button secondary" type="button" onClick={onClearEvidence}>Clear answer highlight</button>}<a href="#talk" className="evidence-return">Back to conversation</a></div>}
     <div className="graph-toolbar"><span className="muted">Select a record to see its saved details.</span><label className="sr-only" htmlFor="graph-filter">Filter memory map</label><select id="graph-filter" value={filter} onChange={event => { setFilter(event.target.value); select(null); }}><option value="all">All records</option><option value="person">People</option><option value="event">Notes</option><option value="medication">Medications</option><option value="appointment">Appointments</option></select></div>
     {graph.nodes.length === 0 ? <p className="empty">No graph records were returned.</p> : <svg viewBox="0 0 600 380" className="memory-map" role="group" aria-label="Saved record relationships">
       <title>Saved records connected to this person</title>
@@ -37,7 +42,7 @@ export function MemoryMap({ graph }: { graph: MemoryGraph }) {
         const x2 = target.x - dx * 32 - dy * shift, y2 = target.y - dy * 32 + dx * shift;
         return <g key={key}><title>{`${label(edge.source)} → ${label(edge.target)}: ${edge.detail}`}</title><line x1={x1} y1={y1} x2={x2} y2={y2} markerEnd={`url(#${arrowId})`} /><text x={(x1 + x2) / 2 - dy * 8} y={(y1 + y2) / 2 + dx * 8} textAnchor="middle" fontSize="10" fill="#526b58">{edge.detail!.length > 20 ? edge.detail!.slice(0, 18) + '…' : edge.detail}</text></g>;
       })}
-      {visible.map(node => { const point = positions.get(node.id)!; return <g key={node.id} role="button" tabIndex={0} aria-label={`${node.kind}: ${node.label}`} aria-pressed={selected === node.id} onClick={() => select(node.id)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(node.id); } }} className={`graph-node ${node.kind} ${selected === node.id ? 'selected' : ''}`} transform={`translate(${point.x}, ${point.y})`}><title>{node.label}</title><circle r={node.kind === 'person' ? 28 : 10} /><text y={node.kind === 'person' ? 47 : 27} textAnchor="middle">{node.label.length > 22 ? node.label.slice(0, 20) + '…' : node.label}</text></g>; })}
+      {visible.map(node => { const point = positions.get(node.id)!; const cited = linked.some(saved => saved.id === node.id); return <g key={node.id} role="button" tabIndex={0} aria-label={`${node.kind}: ${node.label}${cited ? ', cited in this answer' : ''}`} aria-pressed={selected === node.id} onClick={() => select(node.id)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(node.id); } }} className={`graph-node ${node.kind} ${selected === node.id ? 'selected' : ''}`} transform={`translate(${point.x}, ${point.y})`}><title>{node.label}</title>{cited && <circle className="evidence-ring" r={node.kind === 'person' ? 35 : 17} />}<circle r={node.kind === 'person' ? 28 : 10} /><text y={node.kind === 'person' ? 47 : 27} textAnchor="middle">{node.label.length > 22 ? node.label.slice(0, 20) + '…' : node.label}</text></g>; })}
     </svg>}
     <div className="graph-legend"><span><i className="dot person" />People</span><span><i className="dot event" />Note</span><span><i className="dot medication" />Medication</span><span><i className="dot appointment" />Appointment</span></div>
     {graph.edges.some(edge => edge.relation === 'RELATED_TO') && <p className="view-note">Arrows follow each saved relationship from its source person to its target. Select a person to read the full relationship.</p>}

@@ -9,8 +9,9 @@ import { playVoiceBlob } from './voicePlayback';
 import { CompanionFace } from './CompanionFace';
 import './talk.css';
 
-export function TalkToSaarthi({ person, client, onDraft, canDraftFamily = true, voice }: {
+export function TalkToSaarthi({ person, client, onDraft, onEvidence, canDraftFamily = true, voice }: {
   person: Person; client: TalkClient; onDraft: (action: TalkAction) => void; canDraftFamily?: boolean; voice?: AwsVoiceClient;
+  onEvidence?: (record: TalkReply['evidence'][number]) => void;
 }) {
   const [question, setQuestion] = useState('');
   const [zone, setZone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
@@ -275,7 +276,10 @@ export function TalkToSaarthi({ person, client, onDraft, canDraftFamily = true, 
           <p className="talk-question"><span className="eyebrow">YOU</span>{reply.question}</p>
           <div className="talk-answer"><span className="eyebrow">SAARTHI</span><p className="talk-answer-text">{reply.answer}</p>
             {playbackAvailable && <button className="button secondary" type="button" disabled={sessionActive || listening || starting} onClick={() => speakingTurn === index ? stopSpeaking() : void readAloud(reply, index)}>{speakingTurn === index ? loadingAudio ? 'Cancel audio' : 'Stop speaking' : 'Hear a short answer'}</button>}
-            <details><summary>Supporting records ({reply.evidence.length})</summary>{reply.evidence.length ? <ul className="evidence-list">{reply.evidence.map(e => <li key={e.id}><p>{e.text}</p>{e.at && <time dateTime={e.at}>{new Date(e.at).toLocaleString()}</time>}</li>)}</ul> : <p>No supporting records were found for this answer.</p>}<p className="form-hint">Checked: {reply.sources_checked.join(', ') || 'No records checked'}</p></details>
+            <details><summary>Supporting records ({reply.evidence.length})</summary>{reply.evidence.length ? <ul className="evidence-list">{reply.evidence.map(e => <li key={e.id}><span className="evidence-kind">{e.kind === 'note' ? 'Saved note' : e.kind === 'relationship' ? 'Family connection' : e.kind === 'appointment' ? 'Appointment record' : 'Saved medication schedule'}</span><p>{e.text}</p>{e.at && <time dateTime={e.at}>{new Date(e.at).toLocaleString()}</time>}{onEvidence && Boolean(e.graph_node_ids?.length) && <button type="button" className="button secondary evidence-link" onClick={() => {
+              session.current?.stop('Conversation paused while you look at a saved record.');
+              stopSpeaking(); onEvidence(e);
+            }}>See in saved connections <span aria-hidden="true">↗</span></button>}</li>)}</ul> : <p>No supporting records were found for this answer.</p>}<p className="form-hint">Checked: {reply.sources_checked.join(', ') || 'No records checked'}</p></details>
             {reply.action && <div className="talk-draft"><p>{reply.action.type === 'family_message' ? 'A family message draft is ready.' : 'An appointment draft is ready.'}</p>
               <p className="talk-answer-text">{reply.action.type === 'family_message' ? reply.action.message : `${reply.action.title}\n${reply.action.start_local.replace('T', ' ')} to ${reply.action.end_local.replace('T', ' ')}\n${reply.action.time_zone}`}</p>
               {reply.action.type === 'family_message' && !canDraftFamily ? <p>Family messaging requires the signed-in household dashboard.</p> : <button className="button secondary" type="button" onClick={() => { session.current?.stop('Conversation paused for draft review.'); onDraft(reply.action!); setDraftNotice('Draft copied to the form below. Review and confirm there to save or send.'); }}>Use this draft</button>}

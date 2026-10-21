@@ -35,6 +35,15 @@ describe('Talk to Saarthi verification', () => {
     expect(result.action).toEqual({ type: 'family_message', message: 'Saved update' });
     expect(call).toHaveBeenCalledTimes(1);
   });
+  it('accepts exact graph IDs, preserves old-server compatibility and rejects mismatched kinds', () => {
+    const value = reply(), record = value.evidence[0];
+    expect(parseTalkReply(value, 'parent', value.question).evidence[0].graph_node_ids).toEqual([]);
+    record.graph_node_ids = ['event:' + 'a'.repeat(64)];
+    expect(parseTalkReply(value, 'parent', value.question).evidence[0].graph_node_ids).toEqual(record.graph_node_ids);
+    for (const nodes of [['person:' + 'a'.repeat(64)], ['event:guessed'], [...record.graph_node_ids, ...record.graph_node_ids]]) {
+      expect(() => parseTalkReply({ ...value, evidence: [{ ...record, graph_node_ids: nodes }] }, 'parent', value.question)).toThrow();
+    }
+  });
   it('provides typed fallback and does not start recognition during feature detection', () => {
     expect(recognitionFactory({} as Window)).toBeNull();
     const start = vi.fn();

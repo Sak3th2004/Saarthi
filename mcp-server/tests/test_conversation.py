@@ -8,6 +8,7 @@ from fastmcp.exceptions import ToolError
 import pytest
 
 from saarthi_mcp.conversation import ConversationError, ConversationService
+from saarthi_mcp.graph import memory_graph, graph_node_identity
 from saarthi_mcp.repository import now_utc, seeded_repository
 from saarthi_mcp.server import build_server
 
@@ -63,6 +64,32 @@ def test_unknown_answer_cannot_contain_generated_claim(environment):
     result = ask(environment, "Where is the silver suitcase?")
     assert "couldn't find a supporting record" in result["answer"]
     assert result["evidence"] == []
+
+
+@pytest.mark.parametrize("source", ["notes", "appointments", "medications", "relationships"])
+def test_citations_link_to_exact_person_scoped_graph_records(environment, source):
+    repo, person, model, _ = environment
+    if source == "relationships":
+        from saarthi_mcp.directory import directory_revision
+        repo.apply_household_change({"kind": "set_relationship", "from_person": repo.family_contacts()[0].id,
+                                     "to_person": person.id, "relation": "son"},
+                                    directory_revision(repo.household_directory()))
+    # The same record serialization drives both views; no LLM-generated graph IDs.
+    model.callback = lambda prompt, read, finish: finish([row["id"] for row in read(source)][:6])
+    result = ask(environment)
+    graph = memory_graph(repo, person, limit=100)
+    node_ids = {node.id for node in graph.nodes}
+    assert result["evidence"], source
+    for evidence in result["evidence"]:
+        assert evidence["graph_node_ids"]
+        assert set(evidence["graph_node_ids"]) <= node_ids
+
+
+def test_citation_identity_changes_when_record_or_owner_changes():
+    record = {"type": "note", "detail": "Saved place", "at": "2026-10-20T10:00:00Z"}
+    original = graph_node_identity("person-one", "event", record)
+    assert original != graph_node_identity("person-two", "event", record)
+    assert original != graph_node_identity("person-one", "event", {**record, "detail": "Updated place"})
 
 
 @pytest.mark.parametrize("ids", [["fabricated"], [1], "record"])

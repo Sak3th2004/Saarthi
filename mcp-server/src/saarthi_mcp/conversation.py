@@ -14,6 +14,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from saarthi_mcp.models import Person
+from saarthi_mcp.graph import graph_node_identity
 from saarthi_mcp.repository import HouseholdRepository, ensure_aware, now_utc
 
 
@@ -131,14 +132,14 @@ class ConversationService:
         characters = 0
         tool_lock = RLock()
 
-        def item(kind, text, at=None):
+        def item(kind, text, at=None, node_ids=()):
             nonlocal characters
             # Whole records only: do not truncate a fact and accidentally change its meaning.
             if len(text) > 1200 or characters + len(text) > 24000:
                 return None
             stamp = ensure_aware(at).isoformat() if at else None
             identity = sha256(json.dumps([person.id, kind, text, stamp]).encode()).hexdigest()[:24]
-            value = {"id": identity, "kind": kind, "text": text, "at": stamp}
+            value = {"id": identity, "kind": kind, "text": text, "at": stamp, "graph_node_ids": list(node_ids)}
             evidence[identity] = value
             characters += len(text)
             return value
@@ -167,7 +168,9 @@ class ConversationService:
                     )
                     for event in events:
                         if event.type not in {"agent_action", "household_setup"} and ensure_aware(event.at) <= now_utc():
-                            values.append(item("note", event.detail, event.at))
+                            values.append(item("note", event.detail, event.at, [
+                                graph_node_identity(person.id, "event", event.model_dump(mode="json")),
+                            ]))
                 elif source == "appointments":
                     for appointment in self.repo.upcoming_appointments(person.id, limit=15):
                         start = ensure_aware(appointment.when).astimezone(zone).isoformat()
@@ -175,17 +178,21 @@ class ConversationService:
                         values.append(item(
                             "appointment", f"{appointment.kind}: {start}{end}. "
                             "Saved schedule record; not confirmation from a provider.", appointment.when,
+                            [graph_node_identity(person.id, "appointment", appointment.model_dump(mode="json"))],
                         ))
                 elif source == "medications":
                     for medication in self.repo.medications_for(person.id)[:15]:
                         values.append(item(
                             "medication", f"Caregiver-saved schedule: {medication.name}, {medication.dose}, "
                             f"at {', '.join(medication.schedule)}. Saved supply: {medication.supply_count}.",
+                            node_ids=[graph_node_identity(person.id, "medication", medication.model_dump(mode="json"))],
                         ))
                 else:
                     for relation in self.repo.relationships_for(person.id, limit=15):
                         values.append(item(
                             "relationship", f"{relation.source.name} is {relation.relation} of {relation.target.name}.",
+                            node_ids=[graph_node_identity(person.id, "person", {"id": member.id})
+                                      for member in (relation.source, relation.target)],
                         ))
                 return [value for value in values if value is not None]
 

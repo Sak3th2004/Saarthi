@@ -30,6 +30,14 @@
 .companion-face.thinking .companion-eyes,.companion-face.loading-audio .companion-eyes{transform:scaleY(.45)}
 .companion-face.blocked .companion-light{fill:#a24428}
 .companion-face.speaking .companion-mouth{stroke-width:6}
+.companion-face .companion-platform{opacity:.5}.companion-face.listening .companion-platform,.companion-face.speaking .companion-platform{stroke:#087b86;stroke-width:2;opacity:1}
+.companion-face.blocked .companion-platform{stroke:#a24428}
+.evidence-kind{display:block;font-size:.72rem;font-weight:600;color:#34596c;margin-top:14px}
+.evidence-link{display:flex;margin:12px 0 18px;font-size:.78rem}
+.graph-evidence{padding:18px;margin:16px 0;background:#eef7fa;border:1px solid #8cabbc;border-radius:14px;font-size:.85rem;overflow-wrap:anywhere}
+.graph-evidence p{margin:10px 0}.evidence-return{display:inline-block;margin:12px;color:#184f67;text-decoration:underline;text-underline-offset:3px}
+.memory-map .graph-node .evidence-ring{fill:none;stroke:#086c8b;stroke-width:2.5;stroke-dasharray:4 3}
+#memory{scroll-margin-top:24px}
 .companion-session{border:1px solid #b8d3da;background:#f4fafb;border-radius:14px;padding:18px}
 .companion-session-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .companion-session-heading .eyebrow{font-size:.6rem;margin:0;line-height:1.5}

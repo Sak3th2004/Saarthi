@@ -6,7 +6,7 @@ export type TalkAction = { type: 'family_message'; message: string } | {
 };
 export type TalkReply = {
   person: Person; question: string; conversation_id: string; answer: string; speech: string;
-  evidence: { id: string; kind: 'note'|'appointment'|'medication'|'relationship'; text: string; at: string|null }[];
+  evidence: { id: string; kind: 'note'|'appointment'|'medication'|'relationship'; text: string; at: string|null; graph_node_ids?: string[] }[];
   action: TalkAction|null; sources_checked: string[]; notice: string; model_id: string;
 };
 export type TalkClient = {
@@ -31,7 +31,13 @@ export function parseTalkReply(value: unknown, person: string, question: string,
     const e = object(value);
     if (!['note', 'appointment', 'medication', 'relationship'].includes(String(e.kind))) throw invalid();
     if (e.at !== null && (typeof e.at !== 'string' || !/(Z|[+-]\d\d:\d\d)$/.test(e.at) || !Number.isFinite(Date.parse(e.at)))) throw invalid();
-    return { id: text(e.id, 300), kind: e.kind as TalkReply['evidence'][number]['kind'], text: text(e.text), at: e.at as string|null };
+    // Older servers have no graph links. Never infer a link from similar prose.
+    const nodes = e.graph_node_ids ?? [];
+    const kind = { note: 'event', appointment: 'appointment', medication: 'medication', relationship: 'person' }[String(e.kind)]!;
+    if (!Array.isArray(nodes) || nodes.length > (e.kind === 'relationship' ? 2 : 1) ||
+        nodes.some(id => typeof id !== 'string' || !new RegExp(`^${kind}:[a-f0-9]{64}$`).test(id)) ||
+        new Set(nodes).size !== nodes.length) throw invalid();
+    return { id: text(e.id, 300), kind: e.kind as TalkReply['evidence'][number]['kind'], text: text(e.text), at: e.at as string|null, graph_node_ids: nodes };
   });
   if (new Set(evidence.map(e => e.id)).size !== evidence.length) throw invalid();
   let action: TalkAction|null = null;
