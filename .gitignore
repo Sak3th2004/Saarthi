@@ -50,3 +50,17 @@ Thumbs.db
 # Local evidence and disposable test workspaces (never project source).
 /.local-artifacts/
 /.test-temp-*/
+
+# Local planning, coding-assistant instructions and reference material.
+# Public setup guides and submission feedback are explicitly retained.
+*.md
+!/README.md
+!/FRICTION_LOG.md
+!/agents/README.md
+!/mcp-server/README.md
+!/dashboard/packages/voice-turns/README.md
+/.claude/
+/.agents/
+/.codex/
+/docs/
+/trash/

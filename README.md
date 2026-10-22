@@ -39,7 +39,7 @@ Use the reviewer credentials supplied **privately in the submission's testing in
 
 Specialist routing covers MedGuardian, Appointments, FamilyLoop and Watch. Domain tools remain bounded and testable. The conversation model cannot independently send email or create calendar events: drafts move into existing review and confirmation flows.
 
-**Not shipped:** AgentCore Runtime or Memory, SMS, background reminders, autonomous purchasing, actual Alexa-device integration, unrestricted multi-household signup or general medical reasoning. [`AGENTS.md`](./AGENTS.md) contains the original plan, including aspirations beyond this release; the table above describes the implementation.
+**Not shipped:** AgentCore Runtime or Memory, SMS, background reminders, autonomous purchasing, actual Alexa-device integration, unrestricted multi-household signup or general medical reasoning. The table above describes the implemented release.
 
 ## Architecture
 
@@ -171,7 +171,7 @@ For the reusable toolkit alone, run `npm ci`, `npm test`, and `npm run build` in
 - Aura Free can pause after 72 hours of inactivity. Check and resume it as necessary before demonstrations and throughout judging; see [Neo4j instance actions](https://neo4j.com/docs/aura/managing-instances/instance-actions/).
 - Keep the app and connected services available through judging. Budget alerts and voice rate limits are not hard account-wide spending limits.
 
-The [friction log](./FRICTION_LOG.md) records development obstacles. The original plan is separate from the shipped feature list above.
+The [friction log](./FRICTION_LOG.md) records development obstacles, workarounds and product feedback. Entries describe what happened on their recorded dates; the implemented-feature table above describes the current release.
 
 ## License
 
