@@ -4,7 +4,7 @@ Saarthi helps a family keep track of an older adult's notes, relationships, medi
 
 **[Open the live notebook](https://dj2rbmh5yr.us-east-1.awsapprunner.com)** · **[Reusable Voice Turns toolkit](https://github.com/Sak3th2004/voice-turns)** · **[MIT license](./LICENSE)**
 
-Amazon Build, Ship, Shape entry: Alexa+ web experience, AWS Builder and Open Source. This is an **Alexa-style web simulation backed by a real MCP server and live services**, not an Alexa device connection or Alexa's voice. The deployed application release is `8395d12`; later documentation-only commits do not change that running image.
+Amazon Build, Ship, Shape entry: Alexa+ web experience, AWS Builder and Open Source. This is an **Alexa-style web simulation backed by a real MCP server and live services**, not an Alexa device connection or Alexa's voice. Release `8395d12` established the verified companion experience; the final sign-in polish keeps the same authentication flow and permissions.
 
 ## Try it as a judge
 
